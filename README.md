@@ -2,8 +2,7 @@
 
 **The All-in-One Local GUI for AI Dataset Preparation.** *Powered by Microsoft Florence-2 (Native Integration)*
 
-![Dataset Forge Banner](https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/4df8c88c-0c1a-4f59-9060-636605051996/original=true/dataset_forge_banner.jpeg)
-*(Replace this link with your actual banner url if hosted elsewhere)*
+![Dataset Forge Banner](dataset_forge_banner.jpg)
 
 ## 📖 Overview
 
