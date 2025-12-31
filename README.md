@@ -45,85 +45,64 @@ It started as a fork of [Joschek's tools](https://civitai.com/articles/24233) bu
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/dataset-forge.git](https://github.com/YOUR_USERNAME/dataset-forge.git)
+   git clone [https://github.com/patlegu/dataset_forge.git](https://github.com/patlegu/dataset_forge.git)
    cd dataset-forge
-
-   (Optional) Create a Virtual Environment:
-
-Bash
-
-python -m venv venv
-# Windows:
-.\venv\Scripts\activate
-# Linux/Mac:
-source venv/bin/activate
-Install Dependencies:
-
-Bash
-
-pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu118](https://download.pytorch.org/whl/cu118)
-pip install transformers pillow opencv-python numpy psutil timm einops
-(Note: timm and einops are required for Florence-2 model loading).
-
-Run the App:
-
-Bash
-
+   ```
+2. **Create a virtual environment (Recommended):**
+  ```bash
+      python -m venv venv
+      source venv/bin/activate
+  ```
+3. **Install Dependencies:**
+Pytorch can be found at [https://download.pytorch.org/whl/cu118](https://download.pytorch.org/whl/cu118)  
+  ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip install transformers pillow opencv-python numpy psutil timm einops
+    (Note: timm and einops are required for Florence-2 model loading).
+  ```
+4. **Run the App:**
+```Bash
 python dataset_forge.py
-🛠️ Usage Guide
-Video Extractor:
+```
 
-Select a source folder containing videos.
+## 🛠️ Usage Guide
+### Video Extractor:
+- Select a source folder containing videos.
+- Use the slider or **< >** buttons to navigate.
+- Click **SNAPSHOT** to save the current frame, or **EXTRACT ALL** to dump the whole video frames.
 
-Use the slider or < > buttons to navigate.
+### Smart Cropping:
+- Choose your extracted frames folder as Input.  
+- Set a target prompt (e.g., "face").  
+- Select "Bucket Resize (Mod 64)" for training prep.  
 
-Click SNAPSHOT to save the current frame, or EXTRACT ALL to dump the whole video.
+### Batch Captioning:
+- Point to your images.  
+- Select <DETAILED_CAPTION> (Best for SDXL/Pony).  
+- Add your Trigger Word in "Prefix" (e.g., ohwx man).  
 
-Smart Cropping:
+### Manual Edit:
+- Review your captions.  
+- Use Ctrl+S to save changes instantly.
 
-Choose your extracted frames folder as Input.
-
-Set a target prompt (e.g., "face").
-
-Select "Bucket Resize (Mod 64)" for training prep.
-
-Batch Captioning:
-
-Point to your images.
-
-Select <DETAILED_CAPTION> (Best for SDXL/Pony).
-
-Add your Trigger Word in "Prefix" (e.g., ohwx man).
-
-Manual Edit:
-
-Review your captions.
-
-Use Ctrl+S to save changes instantly.
-
-🐞 Troubleshooting & Known Issues
+## 🐞 Troubleshooting & Known Issues
 Here are common issues we encountered during development and how they are handled:
 
-1. [swscaler @ ...] Slice parameters 0, xxx are invalid
-Context: This happens when trying to display or process a video with odd dimensions (e.g., width is 1279px instead of 1280px). FFmpeg/OpenCV hates odd numbers for YUV conversion.
+### 1. [swscaler @ ...] Slice parameters 0, xxx are invalid
+**Context**: This happens when trying to display or process a video with odd dimensions (e.g., width is 1279px instead of 1280px). FFmpeg/OpenCV hates odd numbers for YUV conversion.
 
-Solution: Dataset Forge automatically detects this and crops 1 pixel from the right or bottom on-the-fly. You don't need to do anything; the preview and extraction will work seamlessly.
+**Solution**: Dataset Forge automatically detects this and crops 1 pixel from the right or bottom on-the-fly. You don't need to do anything; the preview and extraction will work seamlessly.
 
-2. "Flash Attention" Warnings
-Context: You might see warnings in the console about flash_attn not being installed.
+### 2. "Flash Attention" Warnings
+** Context**: You might see warnings in the console about flash_attn not being installed.
+**Solution**: This is normal. We intentionally patched the model to use standard PyTorch attention (SDPA) to make installation easier on Windows. Performance is still excellent.
 
-Solution: This is normal. We intentionally patched the model to use standard PyTorch attention (SDPA) to make installation easier on Windows. Performance is still excellent.
-
-3. First Launch is Slow
-Context: The app freezes for a moment when clicking "Load Engine".
-
-Solution: The first time you run it, the app downloads the Florence-2 models (approx 1-3GB) from Hugging Face. Check your console/terminal to see the download progress.
+### 3. First Launch is Slow
+**Context**: The app freezes for a moment when clicking "Load Engine".
+**Solution**: The first time you run it, the app downloads the Florence-2 models (approx 1-3GB) from Hugging Face. Check your console/terminal to see the download progress.
 
 📜 License & Credits
-Author: Patlegu
-
-Original Concept: Based on Joschek's tools.
-
-Model: Uses Microsoft Florence-2.
-
-Project released under MIT License.
+**Author**: Patlegu  
+**Original Concept**: Based on Joschek's tools.  
+**Model**: Uses Microsoft Florence-2.  
+**Project released under MIT License.** 
