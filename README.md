@@ -120,7 +120,7 @@ Context: The app freezes for a moment when clicking "Load Engine".
 Solution: The first time you run it, the app downloads the Florence-2 models (approx 1-3GB) from Hugging Face. Check your console/terminal to see the download progress.
 
 📜 License & Credits
-Author: Patlegus
+Author: Patlegu
 
 Original Concept: Based on Joschek's tools.
 
