@@ -44,7 +44,7 @@ It started as a fork of [Joschek's tools](https://civitai.com/articles/24233) bu
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/patlegu/dataset_forge.git](https://github.com/patlegu/dataset_forge.git)
+   git clone https://github.com/patlegu/dataset_forge.git
    cd dataset-forge
    ```
 2. **Create a virtual environment (Recommended):**
