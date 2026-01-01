@@ -18,6 +18,24 @@ This document tracks the project's modification history as well as future improv
 
 ## 📋 Version History
 
+### [v1.6.0] - 2026-01-01
+#### ✨ New Features
+- Feature: 'BATCH FIX FOLDER'. Scans the entire source folder, detects videos
+   with odd dimensions, and auto-repairs them in bulk (FFmpeg + Smart Swap).
+
+### [v1.5.4] - 2026-01-01
+#### 🔧 Others
+- UX Fix: 'Scroll Memory'. Keeps list position after refresh.
+
+### [v1.5.3] - 2026-01-01
+#### ✨ New Features
+- Feature: 'Smart Swap'. Repaired files replace originals; originals go to trash.
+
+### [v1.5] - 2026-01-01
+#### 🔧 Others
+- Fix: System FFmpeg call for WSL compatibility.
+  Allows robust MP4 (H.264) encoding on WSL/Linux systems.
+
 ### [v1.4.0] - 2026-01-01
 #### ✨ New Features
 - Feature: Added 'REPAIR / FIX VIDEO' tool to auto-fix odd dimensions (swscaler errors).

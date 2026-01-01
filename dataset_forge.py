@@ -53,19 +53,17 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.5.4"
+__version__ = "1.6"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.5.4 - UX Fix: 'Scroll Memory'. After repairing a video, the file list now
-#          automatically scrolls to keep the active video visible and selected.
-#          No more jumping to the top of the list!
+# v1.6   - Feature: 'BATCH FIX FOLDER'. Scans the entire source folder, detects videos
+#          with odd dimensions, and auto-repairs them in bulk (FFmpeg + Smart Swap).
+# v1.5.4 - UX Fix: 'Scroll Memory'. Keeps list position after refresh.
 # v1.5.3 - Feature: 'Smart Swap'. Repaired files replace originals; originals go to trash.
-# v1.5.2 - Feature: 'Silent Cleanup'. Auto-moves defective files to trash.
-# v1.5.1 - UX Fix: 'Repair Video' no longer resets navigation.
 # v1.5   - Fix: System FFmpeg call for WSL compatibility.
 #          Allows robust MP4 (H.264) encoding on WSL/Linux systems.
 # v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool to auto-fix odd dimensions (swscaler errors).
@@ -363,8 +361,11 @@ class ForgeApp:
         tk.Button(t, text="Select Source Folder", bg=ACCENT, fg=BG, bd=0, command=self.vid_browse_src).pack(side="left", padx=5, ipady=5)
         tk.Button(t, text="Set Output Folder", bg=CARD, fg=TEXT, bd=0, command=self.vid_browse_out).pack(side="left", padx=5, ipady=5)
         
-        # Repair Button
-        tk.Button(t, text="REPAIR / FIX VIDEO", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_repair_tool).pack(side="right", padx=15, ipady=5)
+        # Tools Frame
+        tr = tk.Frame(t, bg=BG); tr.pack(side="right")
+        self.btn_batch_fix = tk.Button(tr, text="BATCH FIX FOLDER", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_batch_fix_tool)
+        self.btn_batch_fix.pack(side="right", padx=5, ipady=5)
+        tk.Button(tr, text="REPAIR (Single)", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_repair_tool).pack(side="right", padx=5, ipady=5)
         
         self.lbl_vid_info = tk.Label(t, text="No Video", bg=BG, fg=DIM); self.lbl_vid_info.pack(side="left", padx=15)
 
@@ -448,15 +449,11 @@ class ForgeApp:
             if fixed_path.exists():
                 try:
                     trash_dir.mkdir(exist_ok=True)
-                    print(f"Smart Swap: Archiving '{vid.name}' to trash...")
                     # 1. Move original BAD file to trash
                     shutil.move(str(vid), str(trash_dir / vid.name))
                     
-                    print(f"Smart Swap: Promoting '{fixed_name}' to source...")
                     # 2. Move fixed GOOD file to source folder, renaming it to original name
                     shutil.move(str(fixed_path), str(vid))
-                    # Note: The file at 'vid' path is now the good one. 
-                    # The loop continues, and 'vid' will be added to the list below as a valid file.
                 except Exception as e:
                     print(f"Swap Error: {e}")
 
@@ -515,7 +512,7 @@ class ForgeApp:
             self.lbl_vid_cnt.config(text=f"{frame_no}/{self.video_total_frames}")
             if update_slider: self.vid_slider.set(frame_no)
 
-    # --- VIDEO REPAIR TOOL (SYSTEM CALL FFMPEG) ---
+    # --- SINGLE VIDEO REPAIR ---
     def vid_repair_tool(self):
         if not self.video_path or not self.video_path.exists():
             messagebox.showerror("Error", "Select a video from the list first.")
@@ -523,7 +520,6 @@ class ForgeApp:
         
         ans = messagebox.askyesno("Repair Video", 
                                   f"This will use FFmpeg to re-encode '{self.video_path.name}' and fix odd dimensions.\n"
-                                  "You must have FFmpeg installed on your system.\n\n"
                                   "Proceed?")
         if not ans: return
         threading.Thread(target=self.vid_repair_worker, daemon=True).start()
@@ -531,59 +527,90 @@ class ForgeApp:
     def vid_repair_worker(self):
         self.btn_extract_all.config(state="disabled")
         self.vid_progress.configure(mode="indeterminate"); self.vid_progress.start()
+        self.run_ffmpeg_fix(self.video_path)
         
-        fix_dir = self.video_source_dir / "_fixed"; fix_dir.mkdir(exist_ok=True)
-        out_path = fix_dir / f"{self.video_path.stem}_fixed.mp4"
-        
+        self.root.after(0, lambda: [
+            self.vid_progress.stop(), self.vid_progress.configure(mode="determinate", value=0),
+            self.btn_extract_all.config(state="normal"),
+            messagebox.showinfo("Success", "Video repaired!"),
+            self.vid_load_repaired(self.video_path)
+        ])
+
+    def run_ffmpeg_fix(self, input_path):
+        """Helper to run the FFmpeg subprocess command"""
+        fix_dir = input_path.parent / "_fixed"; fix_dir.mkdir(exist_ok=True)
+        out_path = fix_dir / f"{input_path.stem}_fixed.mp4"
         cmd = [
-            "ffmpeg", "-y",                 # Overwrite
-            "-i", str(self.video_path),     # Input
-            "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", # Magic filter: Force even dimensions
-            "-c:v", "libx264",              # H.264 Encoder
-            "-preset", "fast",              # Speed
-            "-crf", "23",                   # Quality
-            "-c:a", "copy",                 # Copy Audio
-            str(out_path)                   # Output
+            "ffmpeg", "-y", "-i", str(input_path),
+            "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "copy",
+            str(out_path)
         ]
-        
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.root.after(0, lambda: [
-                self.vid_progress.stop(), self.vid_progress.configure(mode="determinate", value=0),
-                self.btn_extract_all.config(state="normal"),
-                messagebox.showinfo("Success", f"Video repaired successfully!\nSaved to: {out_path.name}"),
-                self.vid_load_repaired(out_path) # Reload will trigger the Smart Swap on next refresh
-            ])
-        except Exception as e:
-            self.root.after(0, lambda: [
-                self.vid_progress.stop(),
-                self.btn_extract_all.config(state="normal"),
-                messagebox.showerror("Error", f"FFmpeg Error: {e}")
-            ])
+            return out_path
+        except Exception: return None
 
     def vid_load_repaired(self, path):
-        # 1. Trigger the Smart Swap (File moves occur here)
         self.vid_refresh_files()
-
-        # 2. Find the file in the new list to restore focus
-        # Note: After swap, the active file is the ORIGINAL name, but updated content
-        target_name = self.video_path.name 
+        target_name = path.name 
         new_index = -1
         for i, p in enumerate(self.video_files_cache):
-            if p.name == target_name:
-                new_index = i
-                break
-
-        # 3. Restore UI state
+            if p.name == target_name: new_index = i; break
         if new_index >= 0:
-            self.lst_vid.selection_clear(0, tk.END)
-            self.lst_vid.selection_set(new_index)
-            self.lst_vid.activate(new_index)
-            self.lst_vid.see(new_index)  # <--- SCROLLS TO ITEM
-            
-            # Load the video into the player
+            self.lst_vid.selection_clear(0, tk.END); self.lst_vid.selection_set(new_index)
+            self.lst_vid.activate(new_index); self.lst_vid.see(new_index)
             self.vid_load(self.video_files_cache[new_index])
-            self.lbl_vid_info.config(text=f"[FIXED] {target_name} ...", fg=SUCCESS)
+            self.lbl_vid_info.config(text=f"[FIXED] {target_name}", fg=SUCCESS)
+
+    # --- BATCH REPAIR ---
+    def vid_batch_fix_tool(self):
+        if not self.video_source_dir: return
+        count = len(self.video_files_cache)
+        if count == 0: return messagebox.showinfo("Info", "No videos to fix.")
+        
+        ans = messagebox.askyesno("Batch Repair", 
+                                  f"Scan folder for odd-dimension videos and fix them automatically?\n"
+                                  f"Source: {self.video_source_dir}\n"
+                                  f"Files to scan: {count}")
+        if not ans: return
+        self.is_running = True
+        self.btn_batch_fix.config(text="STOP", bg=ERROR)
+        threading.Thread(target=self.vid_batch_worker, daemon=True).start()
+
+    def vid_batch_worker(self):
+        total = len(self.video_files_cache)
+        processed = 0
+        
+        for i, vid_path in enumerate(self.video_files_cache):
+            if not self.is_running: break
+            
+            # 1. Check dimensions using OpenCV (Fast)
+            needs_fix = False
+            try:
+                cap = cv2.VideoCapture(str(vid_path))
+                w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                cap.release()
+                if (w % 2 != 0) or (h % 2 != 0): needs_fix = True
+            except: pass
+            
+            if needs_fix:
+                self.run_ffmpeg_fix(vid_path)
+            
+            processed += 1
+            self.root.after(0, lambda p=processed, t=total: [
+                self.vid_progress.configure(value=(p/t)*100),
+                self.lbl_vid_info.config(text=f"Scanning... {p}/{t}")
+            ])
+        
+        self.is_running = False
+        self.root.after(0, lambda: [
+            self.vid_progress.configure(value=0),
+            self.btn_batch_fix.config(text="BATCH FIX FOLDER", bg=HIGHLIGHT),
+            self.lbl_vid_info.config(text="Batch Finished."),
+            self.vid_refresh_files()
+        ])
 
     def vid_snapshot(self):
         if self.cap and self.video_output_dir and self.current_video_frame is not None:
