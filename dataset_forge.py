@@ -53,18 +53,20 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.6"
+__version__ = "1.7"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.6   - Feature: 'BATCH FIX FOLDER'. Scans the entire source folder, detects videos
-#          with odd dimensions, and auto-repairs them in bulk (FFmpeg + Smart Swap).
-# v1.5.4 - UX Fix: 'Scroll Memory'. Keeps list position after refresh.
-# v1.5.3 - Feature: 'Smart Swap'. Repaired files replace originals; originals go to trash.
-# v1.5   - Fix: System FFmpeg call for WSL compatibility.
+# v1.7   - Feature: Added 'METADATA / INFO' button in Video Extractor tab.
+#          Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+# v1.6   - Feature: 'BATCH FIX FOLDER'. Scans & repairs odd-dimension videos in bulk.
+# v1.5.4 - UX Fix: 'Scroll Memory'.
+# v1.5.3 - Feature: 'Smart Swap'.
+# v1.5.2 - Feature: 'Silent Cleanup'.
+# v1.5   - Fix: System FFmpeg call.
 #          Allows robust MP4 (H.264) encoding on WSL/Linux systems.
 # v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool to auto-fix odd dimensions (swscaler errors).
 # v1.3   - Feature: Added interactive Treeview for ComfyUI Metadata inspection.
@@ -365,6 +367,9 @@ class ForgeApp:
         tr = tk.Frame(t, bg=BG); tr.pack(side="right")
         self.btn_batch_fix = tk.Button(tr, text="BATCH FIX FOLDER", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_batch_fix_tool)
         self.btn_batch_fix.pack(side="right", padx=5, ipady=5)
+        
+        # REPAIR & METADATA Buttons
+        tk.Button(tr, text="METADATA / INFO", bg=CARD, fg=TEXT, bd=0, font=("Segoe UI", 9), command=self.vid_show_metadata).pack(side="right", padx=5, ipady=5)
         tk.Button(tr, text="REPAIR (Single)", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_repair_tool).pack(side="right", padx=5, ipady=5)
         
         self.lbl_vid_info = tk.Label(t, text="No Video", bg=BG, fg=DIM); self.lbl_vid_info.pack(side="left", padx=15)
@@ -421,47 +426,29 @@ class ForgeApp:
         if d: self.video_output_dir = Path(d); self.config["last_video_output"] = d; self.save_config(); self.vid_refresh_saved()
 
     def vid_refresh_files(self):
-        """
-        Refresh file list with SMART SWAP:
-        If a fixed version exists in /_fixed/, it replaces the original in the Source folder.
-        The original is moved to /_To_Be_Deleted/.
-        """
         self.lst_vid.delete(0, tk.END); self.video_files_cache = []
         if not self.video_source_dir: return
-        
         exts = ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm"]
         candidates = []
         for ext in exts:
             candidates.extend(list(self.video_source_dir.glob(ext)))
-            
-        # SMART SWAP LOGIC
         trash_dir = self.video_source_dir / "_To_Be_Deleted"
         fixed_dir = self.video_source_dir / "_fixed"
         
         for vid in candidates:
-            # Skip files already in subfolders (safety)
             if vid.parent != self.video_source_dir: continue
-            
-            # Check if a fixed version exists in _fixed subfolder
             fixed_name = f"{vid.stem}_fixed.mp4"
             fixed_path = fixed_dir / fixed_name
-            
             if fixed_path.exists():
                 try:
                     trash_dir.mkdir(exist_ok=True)
-                    # 1. Move original BAD file to trash
                     shutil.move(str(vid), str(trash_dir / vid.name))
-                    
-                    # 2. Move fixed GOOD file to source folder, renaming it to original name
                     shutil.move(str(fixed_path), str(vid))
-                except Exception as e:
-                    print(f"Swap Error: {e}")
+                except Exception as e: print(f"Swap Error: {e}")
 
-        # Re-scan after swap
         self.video_files_cache = []
         for ext in exts:
             self.video_files_cache.extend(list(self.video_source_dir.glob(ext)))
-            
         self.video_files_cache.sort(); self.vid_filter(None)
 
     def vid_filter(self, event):
@@ -512,7 +499,68 @@ class ForgeApp:
             self.lbl_vid_cnt.config(text=f"{frame_no}/{self.video_total_frames}")
             if update_slider: self.vid_slider.set(frame_no)
 
-    # --- SINGLE VIDEO REPAIR ---
+    # --- VIDEO METADATA VIEWER (FFPROBE) ---
+    def vid_show_metadata(self):
+        if not self.video_path or not self.video_path.exists(): return
+        
+        # We try to use ffprobe to get detailed JSON info
+        cmd = [
+            "ffprobe", 
+            "-v", "quiet", 
+            "-print_format", "json", 
+            "-show_format", 
+            "-show_streams", 
+            str(self.video_path)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            data = json.loads(result.stdout.decode('utf-8'))
+            
+            # Formating output
+            out_txt = f"FILE: {self.video_path.name}\n"
+            out_txt += f"SIZE: {self.video_path.stat().st_size / (1024*1024):.2f} MB\n"
+            
+            if 'format' in data:
+                fmt = data['format']
+                out_txt += f"CONTAINER: {fmt.get('format_name')}\n"
+                out_txt += f"DURATION: {fmt.get('duration')} sec\n"
+                out_txt += f"BITRATE: {int(fmt.get('bit_rate', 0))//1000} kbps\n\n"
+                
+                # Metadata Tags (ComfyUI might hide stuff here)
+                if 'tags' in fmt:
+                    out_txt += "--- GLOBAL METADATA TAGS ---\n"
+                    for k, v in fmt['tags'].items():
+                        out_txt += f"[{k}]: {v}\n"
+                    out_txt += "\n"
+
+            if 'streams' in data:
+                for s in data['streams']:
+                    out_txt += f"--- STREAM #{s.get('index')} ({s.get('codec_type')}) ---\n"
+                    out_txt += f"CODEC: {s.get('codec_name')}\n"
+                    if s.get('codec_type') == 'video':
+                        out_txt += f"DIMENSIONS: {s.get('width')}x{s.get('height')}\n"
+                        out_txt += f"FPS: {s.get('r_frame_rate')}\n"
+                    if 'tags' in s:
+                        for k, v in s['tags'].items():
+                            out_txt += f"  [{k}]: {v}\n"
+                    out_txt += "\n"
+
+            # Show in window
+            top = tk.Toplevel(self.root)
+            top.title(f"Video Metadata - {self.video_path.name}")
+            top.geometry("600x700")
+            top.configure(bg=BG)
+            st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 10))
+            st.pack(fill="both", expand=True)
+            st.insert(tk.END, out_txt)
+            
+        except FileNotFoundError:
+            messagebox.showerror("Error", "ffprobe not found! Install FFmpeg.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to probe video: {e}")
+
+    # --- VIDEO REPAIR TOOL (SYSTEM CALL FFMPEG) ---
     def vid_repair_tool(self):
         if not self.video_path or not self.video_path.exists():
             messagebox.showerror("Error", "Select a video from the list first.")
@@ -520,6 +568,7 @@ class ForgeApp:
         
         ans = messagebox.askyesno("Repair Video", 
                                   f"This will use FFmpeg to re-encode '{self.video_path.name}' and fix odd dimensions.\n"
+                                  "You must have FFmpeg installed on your system.\n\n"
                                   "Proceed?")
         if not ans: return
         threading.Thread(target=self.vid_repair_worker, daemon=True).start()
@@ -584,8 +633,6 @@ class ForgeApp:
         
         for i, vid_path in enumerate(self.video_files_cache):
             if not self.is_running: break
-            
-            # 1. Check dimensions using OpenCV (Fast)
             needs_fix = False
             try:
                 cap = cv2.VideoCapture(str(vid_path))
@@ -595,9 +642,7 @@ class ForgeApp:
                 if (w % 2 != 0) or (h % 2 != 0): needs_fix = True
             except: pass
             
-            if needs_fix:
-                self.run_ffmpeg_fix(vid_path)
-            
+            if needs_fix: self.run_ffmpeg_fix(vid_path)
             processed += 1
             self.root.after(0, lambda p=processed, t=total: [
                 self.vid_progress.configure(value=(p/t)*100),

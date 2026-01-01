@@ -44,6 +44,18 @@ def get_version_from_code():
                     pass
     return None
 
+def check_uncommitted_changes():
+    """Vérifie s'il y a des changements non commités."""
+    try:
+        result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, encoding='utf-8')
+        if result.stdout.strip():
+            print("\n⚠️  ATTENTION : Des modifications non commités ont été détectées !")
+            print("   Le script se base uniquement sur l'historique GIT (les commits).")
+            print("   Vos fichiers modifiés actuels ne seront pas listés tant qu'ils ne sont pas commités.")
+            print("   Conseil : Faites vos commits (ex: 'feat: ...') AVANT de lancer ce script.\n")
+    except Exception:
+        pass
+
 def get_git_commits(revision_range=None):
     """Récupère les commits depuis le dernier tag ou tous les commits si aucun tag."""
     if not revision_range:
@@ -51,13 +63,18 @@ def get_git_commits(revision_range=None):
             # Trouve le dernier tag
             tag = subprocess.check_output(["git", "describe", "--tags", "--abbrev=0"], stderr=subprocess.DEVNULL).decode().strip()
             revision_range = f"{tag}..HEAD"
+            print(f"ℹ️  Dernier tag détecté : {tag}")
         except subprocess.CalledProcessError:
             # Pas de tag trouvé, on prend tout
             revision_range = "HEAD"
+            print("ℹ️  Aucun tag trouvé, analyse de tout l'historique.")
     
+    print(f"ℹ️  Plage de révision analysée : {revision_range}")
+
     # Récupère les messages de commit
     result = subprocess.run(["git", "log", revision_range, "--pretty=format:%s"], capture_output=True, text=True, encoding='utf-8')
-    return result.stdout.strip().split('\n')
+    commits = result.stdout.strip().split('\n')
+    return [c for c in commits if c] # Filtre les lignes vides
 
 def format_commits(commits, version_name=None):
     """Trie les commits par catégories basées sur des préfixes courants."""
@@ -141,8 +158,10 @@ if __name__ == "__main__":
             version_name = f"[v{detected_ver}]"
             print(f"ℹ️  Version détectée automatiquement : {version_name}")
 
+    check_uncommitted_changes()
     commits = get_git_commits(args.range)
-    if not commits or commits == ['']:
+    
+    if not commits:
         print("Aucun nouveau commit à ajouter.")
     else:
         formatted = format_commits(commits, version_name)
