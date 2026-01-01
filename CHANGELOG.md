@@ -18,11 +18,37 @@ This document tracks the project's modification history as well as future improv
 
 ## 📋 Version History
 
-### [v1.7.2] - 2026-01-01
+### [v1.7.6] - 2026-01-01
+
+#### ✨ New Features
+- Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+### [v1.7.5] - 2026-01-01
+
+#### ✨ New Features
+- Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+#### 🔧 Others
+- Fix: 'Smart JSON Unescaper'. Backported from v1.9.
+       Detects and cleans escaped JSON strings (e.g. "{\"prompt\":...) in
+        video metadata to display readable ComfyUI workflows/prompts.
+
+### [v1.7.4] - 2026-01-01
+
+#### ✨ New Features
+- Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
 
 #### 🔧 Others
 - - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
 
+
+### [v1.7.2] - 2026-01-01
+
+#### ✨ New Features
+- Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+#### 🔧 Others
+- - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
 
 ### [v1.7.1] - 2026-01-01
 

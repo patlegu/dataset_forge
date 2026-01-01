@@ -53,16 +53,29 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.7.2"
+__version__ = "1.7.6"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.7.2 - Fix: Forced clipboard update in 'COPY ALL INFO' for WSL compatibility.
-# v1.7.1 - UX: Added 'COPY ALL INFO' button to Video Metadata window.
-# v1.7   - Feature: Added 'METADATA / INFO' button in Video Extractor tab.
+# v1.7.6 - Fix: 'Recursive JSON Unpacker'. Now drills down into nested JSON strings.
+#          Solves the issue where ComfyUI stores the 'prompt' workflow as a string 
+#          INSIDE the comment JSON, causing "wall of text" with escaped quotes.
+# v1.7.5 - Fix: 'Smart JSON Unescaper'. Backported from v1.9.
+#          Detects and cleans escaped JSON strings (e.g. "{\"prompt\":...) in
+#          video metadata to display readable ComfyUI workflows/prompts.
+# v1.7.4 - Fix: 'Smart JSON Decoder'. Enhanced metadata parser to handle "escaped" JSON
+#          strings in video tags (e.g. "{\"prompt\":..."). Now properly unescapes and
+#          formats ComfyUI workflows found in MP4 comments.
+# v1.7.3 - Feature: 'Smart JSON Formatting'. The Video Metadata viewer now detects 
+#          if a tag (like 'comment') contains a ComfyUI workflow and pretty-prints it.
+#          Fix: Added Safe Clipboard handling for WSL to prevent X11 connection crashes
+#          when copying large metadata. Fallback to console output if clipboard fails.
+# v1.7.2 - Fix: Forced clipboard update.
+# v1.7.1 - UX: 'COPY ALL INFO' button.
+# v1.7   - Feature: 'METADATA / INFO' button (ffprobe).
 # v1.6   - Feature: 'BATCH FIX FOLDER'.
 # v1.5.4 - UX Fix: 'Scroll Memory'.
 # v1.5.3 - Feature: 'Smart Swap'.
@@ -243,7 +256,6 @@ class ForgeApp:
         s.configure("TCombobox", fieldbackground=INPUT, background=INPUT, foreground=TEXT, arrowcolor=TEXT)
         self.root.option_add("*TCombobox*Listbox*Background", CARD)
         self.root.option_add("*TCombobox*Listbox*Foreground", TEXT)
-        
         s.configure("Treeview", background=INPUT, foreground=TEXT, fieldbackground=INPUT, borderwidth=0)
         s.map('Treeview', background=[('selected', ACCENT)])
         s.configure("Horizontal.TScale", background=BG, troughcolor=CARD)
@@ -490,14 +502,44 @@ class ForgeApp:
             self.lbl_vid_cnt.config(text=f"{frame_no}/{self.video_total_frames}")
             if update_slider: self.vid_slider.set(frame_no)
 
+    # --- RECURSIVE JSON UNPACKER (NEW v1.7.6) ---
+    def recursive_decode(self, data):
+        """
+        Recursively traverse a JSON structure (dict/list).
+        If a value is a string that looks like JSON, decode it and recurse.
+        """
+        if isinstance(data, str):
+            try:
+                # Try simple load
+                loaded = json.loads(data)
+                # If valid JSON object, recurse into it
+                if isinstance(loaded, (dict, list)):
+                    return self.recursive_decode(loaded)
+            except:
+                pass
+            # Try unescaping double-stringified JSON (common in ComfyUI)
+            if data.startswith('"{') and data.endswith('}"'):
+                try:
+                    clean = data[1:-1].replace('\\"', '"')
+                    loaded = json.loads(clean)
+                    if isinstance(loaded, (dict, list)):
+                        return self.recursive_decode(loaded)
+                except: pass
+            return data
+        
+        elif isinstance(data, dict):
+            return {k: self.recursive_decode(v) for k, v in data.items()}
+        
+        elif isinstance(data, list):
+            return [self.recursive_decode(i) for i in data]
+        
+        return data
+
     # --- VIDEO METADATA VIEWER (FFPROBE) ---
     def vid_show_metadata(self):
         if not self.video_path or not self.video_path.exists(): return
         
-        cmd = [
-            "ffprobe", "-v", "quiet", "-print_format", "json", 
-            "-show_format", "-show_streams", str(self.video_path)
-        ]
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(self.video_path)]
         try:
             result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             data = json.loads(result.stdout.decode('utf-8'))
@@ -510,9 +552,21 @@ class ForgeApp:
                 out_txt += f"CONTAINER: {fmt.get('format_name')}\n"
                 out_txt += f"DURATION: {fmt.get('duration')} sec\n"
                 out_txt += f"BITRATE: {int(fmt.get('bit_rate', 0))//1000} kbps\n\n"
+                
                 if 'tags' in fmt:
                     out_txt += "--- GLOBAL METADATA TAGS ---\n"
-                    for k, v in fmt['tags'].items(): out_txt += f"[{k}]: {v}\n"
+                    for k, v in fmt['tags'].items():
+                        formatted_v = v
+                        # RECURSIVE SMART DECODE
+                        if k in ['comment', 'workflow', 'prompt', 'UserComment']:
+                            try:
+                                # First, initial load of the tag value
+                                initial_obj = json.loads(v)
+                                # Then deep recursion to find nested JSON strings
+                                full_obj = self.recursive_decode(initial_obj)
+                                formatted_v = "\n" + json.dumps(full_obj, indent=4)
+                            except: pass
+                        out_txt += f"[{k}]: {formatted_v}\n"
                     out_txt += "\n"
 
             if 'streams' in data:
@@ -521,47 +575,42 @@ class ForgeApp:
                     out_txt += f"CODEC: {s.get('codec_name')}\n"
                     if s.get('codec_type') == 'video':
                         out_txt += f"DIMENSIONS: {s.get('width')}x{s.get('height')}\n"
-                        out_txt += f"FPS: {s.get('r_frame_rate')}\n"
                     if 'tags' in s:
                         for k, v in s['tags'].items(): out_txt += f"  [{k}]: {v}\n"
                     out_txt += "\n"
 
             top = tk.Toplevel(self.root)
             top.title(f"Video Metadata - {self.video_path.name}")
-            top.geometry("600x700")
+            top.geometry("800x800")
             top.configure(bg=BG)
 
-            # Toolbar with Copy Button
             tb = tk.Frame(top, bg=BG); tb.pack(fill="x", padx=10, pady=5)
             
             def copy_all():
                 content = st.get("1.0", tk.END)
-                self.root.clipboard_clear()
-                self.root.clipboard_append(content)
-                self.root.update() # FORCE UPDATE FOR WSL
-                messagebox.showinfo("Copied", "All metadata copied to clipboard!")
+                try:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(content)
+                    self.root.update()
+                    messagebox.showinfo("Copied", "All metadata copied to clipboard!")
+                except Exception as e:
+                    print("\n--- METADATA OUTPUT ---\n" + content + "\n-----------------------\n")
+                    messagebox.showwarning("Clipboard Error", "Clipboard failed (WSL Limit). Metadata printed to CONSOLE.")
 
             tk.Button(tb, text="COPY ALL INFO", bg=ACCENT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=copy_all).pack(side="right")
-
             st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 10))
             st.pack(fill="both", expand=True)
             st.insert(tk.END, out_txt)
             
-        except FileNotFoundError:
-            messagebox.showerror("Error", "ffprobe not found! Install FFmpeg.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to probe video: {e}")
 
-    # --- VIDEO REPAIR TOOL (SYSTEM CALL FFMPEG) ---
+    # --- VIDEO REPAIR TOOL ---
     def vid_repair_tool(self):
         if not self.video_path or not self.video_path.exists():
             messagebox.showerror("Error", "Select a video from the list first.")
             return
-        
-        ans = messagebox.askyesno("Repair Video", 
-                                  f"This will use FFmpeg to re-encode '{self.video_path.name}' and fix odd dimensions.\n"
-                                  "You must have FFmpeg installed on your system.\n\n"
-                                  "Proceed?")
+        ans = messagebox.askyesno("Repair Video", f"Use FFmpeg to re-encode '{self.video_path.name}' and fix odd dimensions?\nProceed?")
         if not ans: return
         threading.Thread(target=self.vid_repair_worker, daemon=True).start()
 
@@ -569,7 +618,6 @@ class ForgeApp:
         self.btn_extract_all.config(state="disabled")
         self.vid_progress.configure(mode="indeterminate"); self.vid_progress.start()
         self.run_ffmpeg_fix(self.video_path)
-        
         self.root.after(0, lambda: [
             self.vid_progress.stop(), self.vid_progress.configure(mode="determinate", value=0),
             self.btn_extract_all.config(state="normal"),
@@ -578,7 +626,6 @@ class ForgeApp:
         ])
 
     def run_ffmpeg_fix(self, input_path):
-        """Helper to run the FFmpeg subprocess command"""
         fix_dir = input_path.parent / "_fixed"; fix_dir.mkdir(exist_ok=True)
         out_path = fix_dir / f"{input_path.stem}_fixed.mp4"
         cmd = [
@@ -590,7 +637,7 @@ class ForgeApp:
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             return out_path
-        except Exception: return None
+        except: return None
 
     def vid_load_repaired(self, path):
         self.vid_refresh_files()
@@ -609,45 +656,28 @@ class ForgeApp:
         if not self.video_source_dir: return
         count = len(self.video_files_cache)
         if count == 0: return messagebox.showinfo("Info", "No videos to fix.")
-        
-        ans = messagebox.askyesno("Batch Repair", 
-                                  f"Scan folder for odd-dimension videos and fix them automatically?\n"
-                                  f"Source: {self.video_source_dir}\n"
-                                  f"Files to scan: {count}")
+        ans = messagebox.askyesno("Batch Repair", f"Scan {count} videos in folder and auto-fix odd dimensions?")
         if not ans: return
         self.is_running = True
         self.btn_batch_fix.config(text="STOP", bg=ERROR)
         threading.Thread(target=self.vid_batch_worker, daemon=True).start()
 
     def vid_batch_worker(self):
-        total = len(self.video_files_cache)
-        processed = 0
-        
+        total = len(self.video_files_cache); processed = 0
         for i, vid_path in enumerate(self.video_files_cache):
             if not self.is_running: break
             needs_fix = False
             try:
                 cap = cv2.VideoCapture(str(vid_path))
-                w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-                h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                w = cap.get(cv2.CAP_PROP_FRAME_WIDTH); h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 cap.release()
                 if (w % 2 != 0) or (h % 2 != 0): needs_fix = True
             except: pass
-            
             if needs_fix: self.run_ffmpeg_fix(vid_path)
             processed += 1
-            self.root.after(0, lambda p=processed, t=total: [
-                self.vid_progress.configure(value=(p/t)*100),
-                self.lbl_vid_info.config(text=f"Scanning... {p}/{t}")
-            ])
-        
+            self.root.after(0, lambda p=processed, t=total: [self.vid_progress.configure(value=(p/t)*100), self.lbl_vid_info.config(text=f"Scanning... {p}/{t}")])
         self.is_running = False
-        self.root.after(0, lambda: [
-            self.vid_progress.configure(value=0),
-            self.btn_batch_fix.config(text="BATCH FIX FOLDER", bg=HIGHLIGHT),
-            self.lbl_vid_info.config(text="Batch Finished."),
-            self.vid_refresh_files()
-        ])
+        self.root.after(0, lambda: [self.vid_progress.configure(value=0), self.btn_batch_fix.config(text="BATCH FIX FOLDER", bg=HIGHLIGHT), self.lbl_vid_info.config(text="Batch Finished."), self.vid_refresh_files()])
 
     def vid_snapshot(self):
         if self.cap and self.video_output_dir and self.current_video_frame is not None:
@@ -688,30 +718,25 @@ class ForgeApp:
     # ==========================
     def build_crop_tab(self):
         f = self.tabs["Smart Cropping"]; f.configure(padx=30, pady=20)
-        
         self.crop_in = tk.StringVar(value=self.config.get("last_crop_in", ""))
         self.crop_out = tk.StringVar(value=self.config.get("last_crop_out", ""))
         self.field(f, "Input Folder", self.crop_in, True)
         self.field(f, "Output Folder", self.crop_out, True)
-        
         cfg = tk.Frame(f, bg=BG); cfg.pack(fill="x", pady=20)
         c1 = tk.Frame(cfg, bg=BG); c1.pack(side="left", fill="x", expand=True)
         tk.Label(c1, text="Target Object", bg=BG, fg=DIM).pack(anchor="w")
         self.crop_target = tk.StringVar(value=DEFAULTS["crop_prompt"])
         tk.Entry(c1, textvariable=self.crop_target, bg=INPUT, fg=TEXT, bd=0).pack(fill="x", ipady=5)
-        
         c2 = tk.Frame(cfg, bg=BG); c2.pack(side="left", fill="x", expand=True, padx=20)
         tk.Label(c2, text="Resize Mode", bg=BG, fg=DIM).pack(anchor="w")
         self.crop_meth = tk.StringVar(value="Bucket Resize (Mod 64)")
         ttk.Combobox(c2, textvariable=self.crop_meth, values=["Bucket Resize (Mod 64)", "Simple Pad (1024x1024)"], state="readonly").pack(fill="x", ipady=4)
-        
         c3 = tk.Frame(cfg, bg=BG); c3.pack(side="left", fill="x", expand=True)
         tk.Label(c3, text="Pad Color", bg=BG, fg=DIM).pack(anchor="w")
         self.pad_col = tk.StringVar(value=DEFAULTS["pad_color"])
         pframe = tk.Frame(c3, bg=BG); pframe.pack(fill="x")
         self.btn_col = tk.Button(pframe, bg=self.pad_col.get(), width=3, command=self.pick_color, bd=0); self.btn_col.pack(side="left")
         tk.Entry(pframe, textvariable=self.pad_col, bg=INPUT, fg=TEXT, bd=0).pack(side="left", fill="x", ipady=5)
-
         self.btn_crop = tk.Button(f, text="START CROPPING", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 10, "bold"), command=self.toggle_crop)
         self.btn_crop.pack(pady=20, ipady=10, fill="x")
         self.crop_log = tk.Label(f, text="Idle", bg=BG, fg=DIM); self.crop_log.pack()
@@ -733,19 +758,16 @@ class ForgeApp:
         imgs = list(src.glob("*.jpg")) + list(src.glob("*.png"))
         target = self.crop_target.get(); mode = self.crop_meth.get()
         hc = self.pad_col.get().lstrip('#'); rgb = tuple(int(hc[i:i+2], 16) for i in (0, 2, 4)); bgr = (rgb[2], rgb[1], rgb[0])
-
         for i, path in enumerate(imgs):
             if not self.is_running: break
             try:
                 img_pil = Image.open(path).convert("RGB")
                 res = self.engine.run_task(img_pil, "<CAPTION_TO_PHRASE_GROUNDING>", target)
                 img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-                
                 for idx, box in enumerate(res.get('bboxes', [])):
                     x1, y1, x2, y2 = map(int, box)
                     m = 20; x1=max(0,x1-m); y1=max(0,y1-m); x2=min(img_pil.width,x2+m); y2=min(img_pil.height,y2+m)
                     crop = img_cv[y1:y2, x1:x2]
-                    
                     if "Bucket" in mode:
                         h, w = crop.shape[:2]; aspect = w / h; target_area = 1024 * 1024
                         new_h = int(np.sqrt(target_area / aspect)); new_w = int(new_h * aspect)
@@ -754,16 +776,13 @@ class ForgeApp:
                         if new_h < 64: new_h = 64
                         final = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
                     else:
-                        final_sz = 1024
-                        ch, cw = crop.shape[:2]; scale = final_sz/max(ch, cw)
+                        final_sz = 1024; ch, cw = crop.shape[:2]; scale = final_sz/max(ch, cw)
                         nw, nh = int(cw*scale), int(ch*scale); resized = cv2.resize(crop, (nw, nh))
                         dw, dh = final_sz-nw, final_sz-nh
                         final = cv2.copyMakeBorder(resized, dh//2, dh-(dh//2), dw//2, dw-(dw//2), cv2.BORDER_CONSTANT, value=bgr)
-                    
                     cv2.imwrite(str(dst / f"{path.stem}_{idx}.jpg"), final)
                 self.root.after(0, lambda x=i, t=len(imgs): self.crop_log.config(text=f"Processing {x+1}/{t}"))
             except Exception as e: print(e)
-            
         self.is_running = False
         self.root.after(0, lambda: [self.crop_log.config(text="Done"), self.btn_crop.config(text="START CROPPING", bg=HIGHLIGHT, state="normal")])
 
@@ -776,7 +795,6 @@ class ForgeApp:
         tk.Label(cfg, text="Caption Mode:", bg=BG, fg=DIM).pack(side="left")
         self.cap_mode = tk.StringVar(value=DEFAULTS["caption_mode"])
         ttk.Combobox(cfg, textvariable=self.cap_mode, values=["<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>"], state="readonly", width=30).pack(side="left", padx=10)
-        
         tf = tk.Frame(f, bg=BG); tf.pack(fill="x", pady=15)
         t1 = tk.Frame(tf, bg=BG); t1.pack(side="left", fill="x", expand=True, padx=(0,5))
         tk.Label(t1, text="Prefix (Trigger Word)", bg=BG, fg=SUCCESS, font=("Segoe UI", 9, "bold")).pack(anchor="w")
@@ -784,11 +802,9 @@ class ForgeApp:
         t2 = tk.Frame(tf, bg=BG); t2.pack(side="left", fill="x", expand=True, padx=(5,0))
         tk.Label(t2, text="Suffix (Style Tags)", bg=BG, fg=DIM).pack(anchor="w")
         self.txt_suffix = tk.Entry(t2, bg=INPUT, fg=TEXT, bd=0); self.txt_suffix.pack(fill="x", ipady=5)
-
         inp = tk.Frame(f, bg=BG); inp.pack(fill="x", pady=10)
         self.batch_dir = tk.StringVar(value=self.config.get("last_batch_dir", ""))
         self.field(inp, "Image Folder", self.batch_dir, True)
-        
         self.btn_batch = tk.Button(f, text="START CAPTIONING", bg=ACCENT, fg=BG, bd=0, font=("Segoe UI", 10, "bold"), command=self.toggle_batch)
         self.btn_batch.pack(fill="x", pady=10, ipady=10)
         self.batch_bar = ttk.Progressbar(f, mode="determinate"); self.batch_bar.pack(fill="x")
@@ -808,7 +824,6 @@ class ForgeApp:
         folder = Path(self.batch_dir.get())
         imgs = list(folder.glob("*.jpg")) + list(folder.glob("*.png")) + list(folder.glob("*.webp"))
         mode = self.cap_mode.get(); prefix = self.txt_prefix.get().strip(); suffix = self.txt_suffix.get().strip()
-        
         for i, path in enumerate(imgs):
             if not self.is_running: break
             try:
@@ -832,38 +847,29 @@ class ForgeApp:
         f = self.tabs["Manual Edit"]
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         tk.Button(t, text="Open Folder", bg=CARD, fg=TEXT, bd=0, command=self.ed_load_btn).pack(side="left", padx=5, ipady=5)
-        
-        # METADATA BUTTON
         self.btn_meta = tk.Button(t, text="METADATA", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.ed_show_meta, state="disabled")
         self.btn_meta.pack(side="left", padx=20, ipady=5)
-
         tk.Label(t, text="(Ctrl+S to Save, Alt+Arrows to Nav)", bg=BG, fg=DIM).pack(side="right")
-        
         pane = tk.Frame(f, bg=BG); pane.pack(fill="both", expand=True, padx=10)
         left = tk.Frame(pane, bg=CARD, width=250); left.pack(side="left", fill="y")
         self.ed_list = tk.Listbox(left, bg=CARD, fg=TEXT, bd=0, highlightthickness=0, selectbackground=HIGHLIGHT)
         self.ed_list.pack(side="left", fill="both", expand=True)
         self.ed_list.bind('<<ListboxSelect>>', self.ed_select)
         sb = tk.Scrollbar(left, command=self.ed_list.yview); sb.pack(side="right", fill="y"); self.ed_list.config(yscrollcommand=sb.set)
-        
         right = tk.Frame(pane, bg=BG); right.pack(side="left", fill="both", expand=True, padx=(10,0))
         self.ed_preview = tk.Label(right, bg="black", text="No Image", fg="white")
         self.ed_preview.pack(fill="both", expand=True)
         self.ed_txt = tk.Text(right, height=5, bg=INPUT, fg=TEXT, bd=0, font=("Segoe UI", 11), insertbackground=TEXT)
         self.ed_txt.pack(fill="x", pady=10)
-        
         b = tk.Frame(right, bg=BG); b.pack(fill="x")
         tk.Button(b, text="SAVE (Ctrl+S)", bg=SUCCESS, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.editor_save).pack(side="right", ipady=5, ipadx=10)
         tk.Button(b, text="< Prev", bg=CARD, fg=TEXT, bd=0, command=lambda: self.editor_nav(-1)).pack(side="left", ipady=5, ipadx=10)
         tk.Button(b, text="Next >", bg=CARD, fg=TEXT, bd=0, command=lambda: self.editor_nav(1)).pack(side="left", padx=5, ipady=5, ipadx=10)
-        
         if self.config.get("last_editor_dir"): self.load_ed_dir(Path(self.config["last_editor_dir"]))
 
     def ed_load_btn(self):
         d = filedialog.askdirectory(initialdir=self.config.get("last_editor_dir", "/"))
-        if d:
-            self.config["last_editor_dir"] = d; self.save_config()
-            self.load_ed_dir(Path(d))
+        if d: self.config["last_editor_dir"] = d; self.save_config(); self.load_ed_dir(Path(d))
 
     def load_ed_dir(self, path):
         self.editor_files = sorted(list(path.glob("*.jpg")) + list(path.glob("*.png")))
@@ -888,7 +894,6 @@ class ForgeApp:
                 self.btn_meta.config(state="normal", bg=WARNING)
             else:
                 self.btn_meta.config(state="disabled", bg=CARD)
-            
             w, h = self.current_editor_img_obj.size; max_h = 500
             if h > max_h: ratio = max_h/h; img = self.current_editor_img_obj.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
             else: img = self.current_editor_img_obj
@@ -903,34 +908,28 @@ class ForgeApp:
         path.with_suffix(".txt").write_text(self.ed_txt.get("1.0", tk.END).strip(), encoding="utf-8")
         orig = self.ed_txt.cget("bg"); self.ed_txt.config(bg=SUCCESS); self.root.after(200, lambda: self.ed_txt.config(bg=orig))
 
-    # --- METADATA INSPECTOR (TREEVIEW) ---
     def ed_show_meta(self):
         if not self.current_editor_img_obj: return
         info = self.current_editor_img_obj.info
         top = tk.Toplevel(self.root); top.title("ComfyUI Metadata Inspector"); top.geometry("1000x700"); top.configure(bg=BG)
         tb = tk.Frame(top, bg=BG); tb.pack(fill="x", padx=10, pady=5)
-        
         def copy_raw(key):
             if key in info:
                 self.root.clipboard_clear(); self.root.clipboard_append(info[key]); messagebox.showinfo("Copied", f"{key} copied!")
-
         def export_json():
             if 'workflow' in info:
                 f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
                 if f:
                     with open(f, 'w') as out: out.write(info['workflow'])
                     messagebox.showinfo("Saved", "Workflow saved!")
-
         tk.Button(tb, text="Copy Prompt", bg=CARD, fg=TEXT, command=lambda: copy_raw('prompt')).pack(side="left", padx=5)
         tk.Button(tb, text="Copy Workflow", bg=CARD, fg=TEXT, command=lambda: copy_raw('workflow')).pack(side="left", padx=5)
         tk.Button(tb, text="Export .json (For Drag&Drop)", bg=ACCENT, fg=BG, command=export_json).pack(side="right", padx=5)
-
         tree = ttk.Treeview(top, columns=("Value"), show="tree headings")
         tree.heading("#0", text="Node / Key"); tree.heading("Value", text="Value")
         tree.column("#0", width=300); tree.column("Value", width=600)
         tree.pack(fill="both", expand=True, padx=10, pady=5)
         vsb = ttk.Scrollbar(top, orient="vertical", command=tree.yview); vsb.place(relx=1.0, relheight=1.0, anchor="ne"); tree.configure(yscrollcommand=vsb.set)
-
         def populate_tree(parent, data):
             if isinstance(data, dict):
                 for k, v in data.items():
@@ -941,7 +940,6 @@ class ForgeApp:
                     node = tree.insert(parent, "end", text=f"[{i}]", open=False)
                     populate_tree(node, v)
             else: tree.item(parent, values=(str(data),))
-
         if 'workflow' in info:
             try:
                 wf = json.loads(info['workflow'])
@@ -955,7 +953,6 @@ class ForgeApp:
                             populate_tree(w_node, node["widgets_values"])
                 else: populate_tree(root_node, wf)
             except: pass
-
         if 'prompt' in info:
             try:
                 pr = json.loads(info['prompt'])
