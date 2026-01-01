@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DATASET FORGE v1.1
+DATASET FORGE v1.2
 (Formerly Joschek Fork)
 A complete, local suite for AI Dataset preparation.
 
 Features:
-- NEW: ComfyUI Metadata Inspector (Prompts & Workflows)
+- NEW: "Pretty" Metadata Inspector with Syntax Highlighting for ComfyUI
 - FIX: Advanced suppression of 'swscaler' warnings
 - Native Florence-2 (Base/Large)
 - Video Frame Extraction
@@ -40,7 +40,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 
 # ---------------- CONFIGURATION ----------------
 APP_NAME = "Dataset Forge"
-VERSION = "1.1"
+VERSION = "1.2"
 CONFIG_FILE = Path.home() / ".config" / "dataset_forge.json"
 
 MODELS = {
@@ -141,15 +141,10 @@ class FlorenceEngine:
 
 # ---------------- HELPER: ODD DIM FIX ----------------
 def fix_odd_dims(frame):
-    """Aggressively crops 1px if dimensions are odd to prevent swscaler errors."""
     if frame is None: return None
     h, w = frame.shape[:2]
-    # Check modulo 2
-    trim_h = h % 2
-    trim_w = w % 2
-    
-    if trim_h > 0 or trim_w > 0:
-        return frame[:h-trim_h, :w-trim_w]
+    trim_h = h % 2; trim_w = w % 2
+    if trim_h > 0 or trim_w > 0: return frame[:h-trim_h, :w-trim_w]
     return frame
 
 # ---------------- GUI ----------------
@@ -169,7 +164,7 @@ class ForgeApp:
         # State
         self.editor_files = []
         self.current_editor_index = -1
-        self.current_editor_img_obj = None # To hold PIL object for metadata
+        self.current_editor_img_obj = None 
         
         self.cap = None
         self.video_path = None
@@ -254,7 +249,7 @@ class ForgeApp:
             b = tk.Label(bar, text=n, bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"), cursor="hand2", padx=15, pady=10)
             b.pack(side="left"); b.bind("<Button-1>", lambda e, x=n: self.switch_tab(x))
             self.btns[n] = b
-        tk.Frame(main, bg=INPUT, height=2).pack(side="top", fill="x") # Separator
+        tk.Frame(main, bg=INPUT, height=2).pack(side="top", fill="x") 
         
         self.build_video_tab(); self.build_crop_tab(); self.build_batch_tab(); self.build_editor_tab()
         self.switch_tab("Video Extractor")
@@ -430,7 +425,7 @@ class ForgeApp:
         while cap.isOpened() and self.is_running:
             ret, frame = cap.read()
             if not ret: break
-            frame = fix_odd_dims(frame) # FIX: Apply cropping in thread too
+            frame = fix_odd_dims(frame) 
             cv2.imwrite(str(self.video_output_dir / f"{self.video_path.stem}_{count:06d}.jpg"), frame)
             count += 1
             if count % 20 == 0: self.root.after(0, lambda c=count, t=total: self.vid_progress.configure(value=(c/t)*100))
@@ -448,7 +443,6 @@ class ForgeApp:
     # ==========================
     def build_crop_tab(self):
         f = self.tabs["Smart Cropping"]; f.configure(padx=30, pady=20)
-        
         self.crop_in = tk.StringVar(value=self.config.get("last_crop_in", ""))
         self.crop_out = tk.StringVar(value=self.config.get("last_crop_out", ""))
         self.field(f, "Input Folder", self.crop_in, True)
@@ -595,7 +589,7 @@ class ForgeApp:
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         tk.Button(t, text="Open Folder", bg=CARD, fg=TEXT, bd=0, command=self.ed_load_btn).pack(side="left", padx=5, ipady=5)
         
-        # --- NEW: METADATA BUTTON ---
+        # METADATA BUTTON
         self.btn_meta = tk.Button(t, text="METADATA", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.ed_show_meta, state="disabled")
         self.btn_meta.pack(side="left", padx=20, ipady=5)
 
@@ -646,7 +640,7 @@ class ForgeApp:
         self.current_editor_index = index; path = self.editor_files[index]
         try:
             self.current_editor_img_obj = Image.open(path)
-            # Enable Meta button if info present
+            # Check Metadata
             if 'workflow' in self.current_editor_img_obj.info or 'prompt' in self.current_editor_img_obj.info:
                 self.btn_meta.config(state="normal", bg=WARNING)
             else:
@@ -655,7 +649,6 @@ class ForgeApp:
             w, h = self.current_editor_img_obj.size; max_h = 500
             if h > max_h: ratio = max_h/h; img = self.current_editor_img_obj.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
             else: img = self.current_editor_img_obj
-            
             self.tk_ed_img = ImageTk.PhotoImage(img); self.ed_preview.config(image=self.tk_ed_img, text="")
         except: self.ed_preview.config(image="", text="Err")
         txt = path.with_suffix(".txt"); self.ed_txt.delete("1.0", tk.END)
@@ -667,35 +660,49 @@ class ForgeApp:
         path.with_suffix(".txt").write_text(self.ed_txt.get("1.0", tk.END).strip(), encoding="utf-8")
         orig = self.ed_txt.cget("bg"); self.ed_txt.config(bg=SUCCESS); self.root.after(200, lambda: self.ed_txt.config(bg=orig))
 
+    # --- METADATA INSPECTOR ---
     def ed_show_meta(self):
-        """Show ComfyUI Metadata in a popup"""
         if not self.current_editor_img_obj: return
         
         info = self.current_editor_img_obj.info
-        content = ""
+        top = tk.Toplevel(self.root); top.title("ComfyUI Metadata"); top.geometry("900x700"); top.configure(bg=BG)
+        st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 10)); st.pack(fill="both", expand=True)
         
+        # Configure Highlighting Tags
+        st.tag_config("NODE", foreground=ACCENT, font=("Consolas", 10, "bold"))
+        st.tag_config("KEY", foreground=WARNING)
+        st.tag_config("VAL", foreground=SUCCESS)
+        st.tag_config("HEADER", foreground=HIGHLIGHT, font=("Segoe UI", 12, "bold"))
+
+        def pretty_print(data, indent=0):
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(v, dict) and "class_type" in v: # It's a Node
+                        st.insert(tk.END, "  " * indent + f"[{k}] {v['class_type']}\n", "NODE")
+                        if "inputs" in v:
+                            pretty_print(v["inputs"], indent + 1)
+                    else:
+                        st.insert(tk.END, "  " * indent + f"{k}: ", "KEY")
+                        st.insert(tk.END, f"{v}\n", "VAL")
+            else:
+                st.insert(tk.END, f"{data}\n", "VAL")
+
+        # 1. PARSE PROMPT (The actual generation params)
         if 'prompt' in info:
+            st.insert(tk.END, "=== GENERATION PARAMETERS (API) ===\n\n", "HEADER")
             try:
                 j = json.loads(info['prompt'])
-                content += "=== PROMPT (API Format) ===\n" + json.dumps(j, indent=2) + "\n\n"
-            except: content += "=== PROMPT (Raw) ===\n" + str(info['prompt']) + "\n\n"
-            
+                pretty_print(j)
+            except: st.insert(tk.END, str(info['prompt']))
+            st.insert(tk.END, "\n" + "-"*50 + "\n\n")
+
+        # 2. PARSE WORKFLOW (The Graph)
         if 'workflow' in info:
+            st.insert(tk.END, "=== WORKFLOW GRAPH (JSON) ===\n\n", "HEADER")
             try:
                 j = json.loads(info['workflow'])
-                content += "=== WORKFLOW (Nodes) ===\n" + json.dumps(j, indent=2) + "\n\n"
-            except: content += "=== WORKFLOW (Raw) ===\n" + str(info['workflow']) + "\n\n"
-            
-        if not content: content = "No ComfyUI metadata found."
-        
-        # Popup Window
-        top = tk.Toplevel(self.root)
-        top.title("Metadata Inspector")
-        top.geometry("800x600")
-        top.configure(bg=BG)
-        st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 9))
-        st.pack(fill="both", expand=True)
-        st.insert(tk.END, content)
+                st.insert(tk.END, json.dumps(j, indent=2)) # Dump full graph
+            except: st.insert(tk.END, str(info['workflow']))
 
     # --- HELPERS ---
     def field(self, p, l, v, b):
