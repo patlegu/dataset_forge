@@ -1,47 +1,93 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-DATASET FORGE v1.3
-(Formerly Joschek Fork)
-A complete, local suite for AI Dataset preparation.
 
-Features:
-- NEW: Interactive Treeview for ComfyUI Metadata (Explore Nodes & Params)
-- NEW: Export Workflow to .json (Drag & Drop compatible with ComfyUI)
-- FIX: Advanced suppression of 'swscaler' warnings
-- Native Florence-2 (Base/Large)
-- Video Frame Extraction
-- Smart Cropping (Bucket-Friendly)
-- Batch Captioning
+"""
+The MIT License (MIT)
+
+Copyright (c) 2025 by Patrice Le Guyader.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, colorchooser, simpledialog
-import threading
-import os
 import sys
+import os
 import time
 import json
-import gc 
+import threading
+import gc
 import psutil
+import subprocess
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+# GUI Imports
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, colorchooser, scrolledtext
+
+# Logic/ML Imports
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
-
-# Machine Learning Imports
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image, ImageTk, PngImagePlugin
+from PIL import Image, ImageTk
 import cv2
 import numpy as np
+
+# Metadata
+__author__ = "Patrice Le Guyader"
+__url__ = "https://github.com/patlegu/dataset_forge"
+__version__ = "1.5.4"
+__status__ = "Production"
+__app_name__ = "Dataset Forge"
+
+# -----------------------------------------------------------------------------
+# CHANGELOG
+# -----------------------------------------------------------------------------
+# v1.5.4 - UX Fix: 'Scroll Memory'. After repairing a video, the file list now
+#          automatically scrolls to keep the active video visible and selected.
+#          No more jumping to the top of the list!
+# v1.5.3 - Feature: 'Smart Swap'. Repaired files replace originals; originals go to trash.
+# v1.5.2 - Feature: 'Silent Cleanup'. Auto-moves defective files to trash.
+# v1.5.1 - UX Fix: 'Repair Video' no longer resets navigation.
+# v1.5   - Fix: System FFmpeg call for WSL compatibility.
+#          Allows robust MP4 (H.264) encoding on WSL/Linux systems.
+# v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool to auto-fix odd dimensions (swscaler errors).
+# v1.3   - Feature: Added interactive Treeview for ComfyUI Metadata inspection.
+#          Added Drag & Drop compatible .json export for Workflows.
+# v1.2   - UI: Added syntax highlighting for metadata text.
+# v1.1   - Feature: Added basic ComfyUI Metadata reader button.
+#          Fix: Aggressive in-memory cropping to prevent display crashes on odd-sized videos.
+# v1.0   - Initial Release: Fork of Joschek's Captioner.
+#          Rebranded to 'Dataset Forge'.
+#          Removed Ollama dependency for Native Florence-2 (Base/Large) via Transformers.
+#          Added 'Smart Bucket Resize' (Mod 64) for cropping.
+# -----------------------------------------------------------------------------
 
 # Suppress FFmpeg/OpenCV noisy logs
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 
-# ---------------- CONFIGURATION ----------------
-APP_NAME = "Dataset Forge"
-VERSION = "1.3"
+
+# -------------------
+# CONFIGURATION & CONSTANTS
+# -------------------
+
 CONFIG_FILE = Path.home() / ".config" / "dataset_forge.json"
 
 MODELS = {
@@ -56,6 +102,7 @@ DEFAULTS = {
     "pad_color": "#000000",
     "caption_mode": "<DETAILED_CAPTION>", 
     "device": "cuda" if torch.cuda.is_available() else "cpu",
+    # Persistent Paths
     "last_batch_dir": "",
     "last_crop_in": "",
     "last_crop_out": "",
@@ -64,7 +111,7 @@ DEFAULTS = {
     "last_editor_dir": ""
 }
 
-# ---------------- THEME ----------------
+# Theme Colors
 BG = "#1e1e2e" 
 CARD = "#313244"
 INPUT = "#45475a"
@@ -76,8 +123,13 @@ WARNING = "#fab387"
 ERROR = "#f38ba8"   
 HIGHLIGHT = "#cba6f7" 
 
-# ---------------- CORE: FLORENCE ENGINE ----------------
+
+# -------------------
+# CORE LOGIC CLASSES
+# -------------------
+
 class FlorenceEngine:
+    """Handles the Florence-2 Model loading and inference."""
     def __init__(self):
         self.model = None
         self.processor = None
@@ -94,6 +146,7 @@ class FlorenceEngine:
 
         status_callback(f"Loading {model_key}...")
         
+        # Patch for Flash Attention to use SDPA
         def fixed_get_imports(filename):
             if not str(filename).endswith("modeling_florence2.py"):
                 return get_imports(filename)
@@ -140,19 +193,29 @@ class FlorenceEngine:
         parsed = self.processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
         return parsed[task_prompt]
 
-# ---------------- HELPER: ODD DIM FIX ----------------
+
 def fix_odd_dims(frame):
+    """
+    Helper: Aggressively crops 1px if dimensions are odd 
+    to prevent swscaler errors in FFmpeg/OpenCV.
+    """
     if frame is None: return None
     h, w = frame.shape[:2]
-    trim_h = h % 2; trim_w = w % 2
-    if trim_h > 0 or trim_w > 0: return frame[:h-trim_h, :w-trim_w]
+    trim_h = h % 2
+    trim_w = w % 2
+    if trim_h > 0 or trim_w > 0:
+        return frame[:h-trim_h, :w-trim_w]
     return frame
 
-# ---------------- GUI ----------------
+
+# -------------------
+# GUI APPLICATION
+# -------------------
+
 class ForgeApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title(f"{APP_NAME} v{VERSION}")
+        root.title(f"{__app_name__} v{__version__}")
         root.geometry("1280x900")
         root.configure(bg=BG)
         root.option_add("*Font", ("Segoe UI", 10))
@@ -162,7 +225,7 @@ class ForgeApp:
         self.is_running = False 
         self.config = self.load_config()
 
-        # State
+        # Application State
         self.editor_files = []
         self.current_editor_index = -1
         self.current_editor_img_obj = None 
@@ -189,7 +252,6 @@ class ForgeApp:
         self.root.option_add("*TCombobox*Listbox*Background", CARD)
         self.root.option_add("*TCombobox*Listbox*Foreground", TEXT)
         
-        # Treeview Colors
         s.configure("Treeview", background=INPUT, foreground=TEXT, fieldbackground=INPUT, borderwidth=0)
         s.map('Treeview', background=[('selected', ACCENT)])
         s.configure("Horizontal.TScale", background=BG, troughcolor=CARD)
@@ -228,7 +290,7 @@ class ForgeApp:
         # Header
         header = tk.Frame(main, bg=BG); header.pack(side="top", fill="x", padx=20, pady=15)
         hl = tk.Frame(header, bg=BG); hl.pack(side="left")
-        tk.Label(hl, text=APP_NAME, bg=BG, fg=ACCENT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(hl, text=__app_name__, bg=BG, fg=ACCENT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         self.res_frame = tk.Frame(hl, bg=BG); self.res_frame.pack(anchor="w", pady=(5,0))
         self.lbl_ram = tk.Label(self.res_frame, text="RAM: ...", bg=BG, fg=WARNING, font=("Consolas", 9))
         self.lbl_ram.pack(side="left", padx=(0, 15))
@@ -300,6 +362,10 @@ class ForgeApp:
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         tk.Button(t, text="Select Source Folder", bg=ACCENT, fg=BG, bd=0, command=self.vid_browse_src).pack(side="left", padx=5, ipady=5)
         tk.Button(t, text="Set Output Folder", bg=CARD, fg=TEXT, bd=0, command=self.vid_browse_out).pack(side="left", padx=5, ipady=5)
+        
+        # Repair Button
+        tk.Button(t, text="REPAIR / FIX VIDEO", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_repair_tool).pack(side="right", padx=15, ipady=5)
+        
         self.lbl_vid_info = tk.Label(t, text="No Video", bg=BG, fg=DIM); self.lbl_vid_info.pack(side="left", padx=15)
 
         pane = tk.Frame(f, bg=BG); pane.pack(fill="both", expand=True, padx=10, pady=5)
@@ -354,10 +420,51 @@ class ForgeApp:
         if d: self.video_output_dir = Path(d); self.config["last_video_output"] = d; self.save_config(); self.vid_refresh_saved()
 
     def vid_refresh_files(self):
+        """
+        Refresh file list with SMART SWAP:
+        If a fixed version exists in /_fixed/, it replaces the original in the Source folder.
+        The original is moved to /_To_Be_Deleted/.
+        """
         self.lst_vid.delete(0, tk.END); self.video_files_cache = []
         if not self.video_source_dir: return
-        for ext in ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm"]:
+        
+        exts = ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm"]
+        candidates = []
+        for ext in exts:
+            candidates.extend(list(self.video_source_dir.glob(ext)))
+            
+        # SMART SWAP LOGIC
+        trash_dir = self.video_source_dir / "_To_Be_Deleted"
+        fixed_dir = self.video_source_dir / "_fixed"
+        
+        for vid in candidates:
+            # Skip files already in subfolders (safety)
+            if vid.parent != self.video_source_dir: continue
+            
+            # Check if a fixed version exists in _fixed subfolder
+            fixed_name = f"{vid.stem}_fixed.mp4"
+            fixed_path = fixed_dir / fixed_name
+            
+            if fixed_path.exists():
+                try:
+                    trash_dir.mkdir(exist_ok=True)
+                    print(f"Smart Swap: Archiving '{vid.name}' to trash...")
+                    # 1. Move original BAD file to trash
+                    shutil.move(str(vid), str(trash_dir / vid.name))
+                    
+                    print(f"Smart Swap: Promoting '{fixed_name}' to source...")
+                    # 2. Move fixed GOOD file to source folder, renaming it to original name
+                    shutil.move(str(fixed_path), str(vid))
+                    # Note: The file at 'vid' path is now the good one. 
+                    # The loop continues, and 'vid' will be added to the list below as a valid file.
+                except Exception as e:
+                    print(f"Swap Error: {e}")
+
+        # Re-scan after swap
+        self.video_files_cache = []
+        for ext in exts:
             self.video_files_cache.extend(list(self.video_source_dir.glob(ext)))
+            
         self.video_files_cache.sort(); self.vid_filter(None)
 
     def vid_filter(self, event):
@@ -375,7 +482,7 @@ class ForgeApp:
         self.cap = cv2.VideoCapture(str(path))
         self.video_path = path; self.video_total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame_pos = 0; self.vid_slider.configure(to=self.video_total_frames-1)
-        self.lbl_vid_info.config(text=f"{path.name} ({self.video_total_frames} fr)")
+        self.lbl_vid_info.config(text=f"{path.name} ({self.video_total_frames} fr)", fg=DIM)
         if not self.video_output_dir:
             self.video_output_dir = path.parent / "extracted"; self.video_output_dir.mkdir(exist_ok=True)
         self.vid_refresh_saved(); self.vid_seek(0, update_slider=True)
@@ -408,6 +515,76 @@ class ForgeApp:
             self.lbl_vid_cnt.config(text=f"{frame_no}/{self.video_total_frames}")
             if update_slider: self.vid_slider.set(frame_no)
 
+    # --- VIDEO REPAIR TOOL (SYSTEM CALL FFMPEG) ---
+    def vid_repair_tool(self):
+        if not self.video_path or not self.video_path.exists():
+            messagebox.showerror("Error", "Select a video from the list first.")
+            return
+        
+        ans = messagebox.askyesno("Repair Video", 
+                                  f"This will use FFmpeg to re-encode '{self.video_path.name}' and fix odd dimensions.\n"
+                                  "You must have FFmpeg installed on your system.\n\n"
+                                  "Proceed?")
+        if not ans: return
+        threading.Thread(target=self.vid_repair_worker, daemon=True).start()
+
+    def vid_repair_worker(self):
+        self.btn_extract_all.config(state="disabled")
+        self.vid_progress.configure(mode="indeterminate"); self.vid_progress.start()
+        
+        fix_dir = self.video_source_dir / "_fixed"; fix_dir.mkdir(exist_ok=True)
+        out_path = fix_dir / f"{self.video_path.stem}_fixed.mp4"
+        
+        cmd = [
+            "ffmpeg", "-y",                 # Overwrite
+            "-i", str(self.video_path),     # Input
+            "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", # Magic filter: Force even dimensions
+            "-c:v", "libx264",              # H.264 Encoder
+            "-preset", "fast",              # Speed
+            "-crf", "23",                   # Quality
+            "-c:a", "copy",                 # Copy Audio
+            str(out_path)                   # Output
+        ]
+        
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.root.after(0, lambda: [
+                self.vid_progress.stop(), self.vid_progress.configure(mode="determinate", value=0),
+                self.btn_extract_all.config(state="normal"),
+                messagebox.showinfo("Success", f"Video repaired successfully!\nSaved to: {out_path.name}"),
+                self.vid_load_repaired(out_path) # Reload will trigger the Smart Swap on next refresh
+            ])
+        except Exception as e:
+            self.root.after(0, lambda: [
+                self.vid_progress.stop(),
+                self.btn_extract_all.config(state="normal"),
+                messagebox.showerror("Error", f"FFmpeg Error: {e}")
+            ])
+
+    def vid_load_repaired(self, path):
+        # 1. Trigger the Smart Swap (File moves occur here)
+        self.vid_refresh_files()
+
+        # 2. Find the file in the new list to restore focus
+        # Note: After swap, the active file is the ORIGINAL name, but updated content
+        target_name = self.video_path.name 
+        new_index = -1
+        for i, p in enumerate(self.video_files_cache):
+            if p.name == target_name:
+                new_index = i
+                break
+
+        # 3. Restore UI state
+        if new_index >= 0:
+            self.lst_vid.selection_clear(0, tk.END)
+            self.lst_vid.selection_set(new_index)
+            self.lst_vid.activate(new_index)
+            self.lst_vid.see(new_index)  # <--- SCROLLS TO ITEM
+            
+            # Load the video into the player
+            self.vid_load(self.video_files_cache[new_index])
+            self.lbl_vid_info.config(text=f"[FIXED] {target_name} ...", fg=SUCCESS)
+
     def vid_snapshot(self):
         if self.cap and self.video_output_dir and self.current_video_frame is not None:
             name = f"{self.video_path.stem}_{self.current_frame_pos:06d}.jpg"
@@ -418,8 +595,7 @@ class ForgeApp:
 
     def vid_extract_all(self):
         if self.is_running:
-            self.is_running = False
-            self.btn_extract_all.config(text="Stopping...", state="disabled")
+            self.is_running = False; self.btn_extract_all.config(text="Stopping...", state="disabled")
         else:
             self.is_running = True; self.btn_extract_all.config(text="STOP", bg=ERROR)
             threading.Thread(target=self.vid_extract_thread, daemon=True).start()
@@ -483,11 +659,9 @@ class ForgeApp:
     def toggle_crop(self):
         if not self.engine.is_loaded: return messagebox.showerror("Err", "Load Engine first!")
         if self.is_running:
-            self.is_running = False
-            self.btn_crop.config(text="Stopping...", state="disabled")
+            self.is_running = False; self.btn_crop.config(text="Stopping...", state="disabled")
         else:
-            self.save_config(); self.is_running = True
-            self.btn_crop.config(text="STOP", bg=ERROR)
+            self.save_config(); self.is_running = True; self.btn_crop.config(text="STOP", bg=ERROR)
             threading.Thread(target=self.crop_worker, daemon=True).start()
 
     def crop_worker(self):
@@ -646,7 +820,6 @@ class ForgeApp:
         self.current_editor_index = index; path = self.editor_files[index]
         try:
             self.current_editor_img_obj = Image.open(path)
-            # Check Metadata
             if 'workflow' in self.current_editor_img_obj.info or 'prompt' in self.current_editor_img_obj.info:
                 self.btn_meta.config(state="normal", bg=WARNING)
             else:
@@ -670,40 +843,29 @@ class ForgeApp:
     def ed_show_meta(self):
         if not self.current_editor_img_obj: return
         info = self.current_editor_img_obj.info
-        
         top = tk.Toplevel(self.root); top.title("ComfyUI Metadata Inspector"); top.geometry("1000x700"); top.configure(bg=BG)
-        
-        # Toolbar
         tb = tk.Frame(top, bg=BG); tb.pack(fill="x", padx=10, pady=5)
         
         def copy_raw(key):
             if key in info:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(info[key])
-                messagebox.showinfo("Copied", f"{key} copied to clipboard!")
+                self.root.clipboard_clear(); self.root.clipboard_append(info[key]); messagebox.showinfo("Copied", f"{key} copied!")
 
         def export_json():
             if 'workflow' in info:
                 f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
                 if f:
-                    with open(f, 'w') as out:
-                        out.write(info['workflow'])
-                    messagebox.showinfo("Saved", "Workflow saved! Drag this file into ComfyUI.")
+                    with open(f, 'w') as out: out.write(info['workflow'])
+                    messagebox.showinfo("Saved", "Workflow saved!")
 
         tk.Button(tb, text="Copy Prompt", bg=CARD, fg=TEXT, command=lambda: copy_raw('prompt')).pack(side="left", padx=5)
         tk.Button(tb, text="Copy Workflow", bg=CARD, fg=TEXT, command=lambda: copy_raw('workflow')).pack(side="left", padx=5)
         tk.Button(tb, text="Export .json (For Drag&Drop)", bg=ACCENT, fg=BG, command=export_json).pack(side="right", padx=5)
 
-        # Treeview
         tree = ttk.Treeview(top, columns=("Value"), show="tree headings")
         tree.heading("#0", text="Node / Key"); tree.heading("Value", text="Value")
         tree.column("#0", width=300); tree.column("Value", width=600)
         tree.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        # Scrollbars
-        vsb = ttk.Scrollbar(top, orient="vertical", command=tree.yview)
-        vsb.place(relx=1.0, relheight=1.0, anchor="ne")
-        tree.configure(yscrollcommand=vsb.set)
+        vsb = ttk.Scrollbar(top, orient="vertical", command=tree.yview); vsb.place(relx=1.0, relheight=1.0, anchor="ne"); tree.configure(yscrollcommand=vsb.set)
 
         def populate_tree(parent, data):
             if isinstance(data, dict):
@@ -714,29 +876,22 @@ class ForgeApp:
                 for i, v in enumerate(data):
                     node = tree.insert(parent, "end", text=f"[{i}]", open=False)
                     populate_tree(node, v)
-            else:
-                tree.item(parent, values=(str(data),))
+            else: tree.item(parent, values=(str(data),))
 
-        # Parse Workflow
         if 'workflow' in info:
             try:
                 wf = json.loads(info['workflow'])
                 root_node = tree.insert("", "end", text="WORKFLOW (Graph)", open=True)
-                # Workflow is usually a list of nodes or a dict
                 if isinstance(wf, dict) and "nodes" in wf:
                     for node in wf["nodes"]:
-                        nid = node.get("id", "?")
-                        ntype = node.get("type", "Unknown")
+                        nid = node.get("id", "?"); ntype = node.get("type", "Unknown")
                         n_item = tree.insert(root_node, "end", text=f"[{nid}] {ntype}", open=False)
-                        # Widgets values
                         if "widgets_values" in node:
                             w_node = tree.insert(n_item, "end", text="Params", open=False)
                             populate_tree(w_node, node["widgets_values"])
-                else:
-                    populate_tree(root_node, wf)
+                else: populate_tree(root_node, wf)
             except: pass
 
-        # Parse Prompt (API)
         if 'prompt' in info:
             try:
                 pr = json.loads(info['prompt'])
@@ -744,8 +899,7 @@ class ForgeApp:
                 for nid, nops in pr.items():
                     ntype = nops.get("class_type", "Unknown")
                     n_item = tree.insert(root_node, "end", text=f"[{nid}] {ntype}", open=False)
-                    if "inputs" in nops:
-                        populate_tree(n_item, nops["inputs"])
+                    if "inputs" in nops: populate_tree(n_item, nops["inputs"])
             except: pass
 
     # --- HELPERS ---
@@ -759,7 +913,16 @@ class ForgeApp:
                 if d: v.set(d)
             tk.Button(r, text="...", command=browse, bg=CARD, fg=TEXT, bd=0).pack(side="right", padx=5)
 
-if __name__ == "__main__":
+
+# -------------------
+# MAIN ENTRY POINT
+# -------------------
+
+def main():
+    """Main application entry point."""
     root = tk.Tk()
-    ForgeApp(root)
+    app = ForgeApp(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    sys.exit(main())
