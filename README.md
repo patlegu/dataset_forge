@@ -81,21 +81,25 @@ python dataset_forge.py
 - Use the slider or **< >** buttons to navigate.
 - Click **SNAPSHOT** to save the current frame, or **EXTRACT ALL** to dump the whole video frames.
 
+![Video Extractor Interface](images/video_extractor.png){ width="60%" }
+
 ### Smart Cropping:
 - Choose your extracted frames folder as Input.  
 - Set a target prompt (e.g., "face").  
 - Select "Bucket Resize (Mod 64)" for training prep.  
+![Video Extractor Interface](images/smart_cropping.png)
 
 ### Batch Captioning:
 - Point to your images.  
 - Select <DETAILED_CAPTION> (Best for SDXL/Pony).  
 - Add your Trigger Word in "Prefix" (e.g., ohwx man).  
+![Video Extractor Interface](images/batch_captioning.png)
 
 ### Manual Edit & Metadata
 - Review: Edit text files quickly with Ctrl+S (Save) and Alt+Arrows (Navigate).
 - Inspector: If an image comes from ComfyUI, the "METADATA" button will light up.  
   Click it to view generation params or export the workflow JSON.
-
+![Video Extractor Interface](images/manual_edit.png)
 ## 🐞 Troubleshooting & Known Issues
 Here are common issues we encountered during development and how they are handled:
 
