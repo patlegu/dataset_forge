@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DATASET FORGE v1.0
+DATASET FORGE v1.1
 (Formerly Joschek Fork)
 A complete, local suite for AI Dataset preparation.
 
 Features:
+- NEW: ComfyUI Metadata Inspector (Prompts & Workflows)
+- FIX: Advanced suppression of 'swscaler' warnings
 - Native Florence-2 (Base/Large)
-- Video Frame Extraction (with Odd-Dim Fix)
-- Smart Cropping (with Bucket-Friendly Resizing mod 64)
-- Batch Captioning with Trigger Words
-- Manual Quality Control Editor
-- Persistent Settings
+- Video Frame Extraction
+- Smart Cropping (Bucket-Friendly)
+- Batch Captioning
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, colorchooser
+from tkinter import ttk, messagebox, filedialog, colorchooser, simpledialog, scrolledtext
 import threading
 import os
+import sys
 import time
 import json
 import gc 
@@ -30,13 +31,16 @@ from transformers.dynamic_module_utils import get_imports
 # Machine Learning Imports
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, PngImagePlugin
 import cv2
 import numpy as np
 
+# Suppress FFmpeg/OpenCV noisy logs
+os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+
 # ---------------- CONFIGURATION ----------------
 APP_NAME = "Dataset Forge"
-VERSION = "1.0"
+VERSION = "1.1"
 CONFIG_FILE = Path.home() / ".config" / "dataset_forge.json"
 
 MODELS = {
@@ -47,11 +51,10 @@ MODELS = {
 DEFAULTS = {
     "model_name": "Florence-2 Base (Fast)",
     "crop_prompt": "face", 
-    "crop_method": "pad", # pad or smart_resize
+    "crop_method": "pad", 
     "pad_color": "#000000",
     "caption_mode": "<DETAILED_CAPTION>", 
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    # Persistent Paths
     "last_batch_dir": "",
     "last_crop_in": "",
     "last_crop_out": "",
@@ -61,17 +64,16 @@ DEFAULTS = {
 }
 
 # ---------------- THEME ----------------
-# Modern Dark Theme Palette
 BG = "#1e1e2e" 
 CARD = "#313244"
 INPUT = "#45475a"
 TEXT = "#cdd6f4"
 DIM = "#a6adc8"
-ACCENT = "#89b4fa" # Blue
-SUCCESS = "#a6e3a1" # Green
-WARNING = "#fab387" # Orange
-ERROR = "#f38ba8"   # Red
-HIGHLIGHT = "#cba6f7" # Purple
+ACCENT = "#89b4fa" 
+SUCCESS = "#a6e3a1" 
+WARNING = "#fab387" 
+ERROR = "#f38ba8"   
+HIGHLIGHT = "#cba6f7" 
 
 # ---------------- CORE: FLORENCE ENGINE ----------------
 class FlorenceEngine:
@@ -91,7 +93,6 @@ class FlorenceEngine:
 
         status_callback(f"Loading {model_key}...")
         
-        # Patch for Flash Attention to use SDPA (Standard Scaled Dot Product Attention)
         def fixed_get_imports(filename):
             if not str(filename).endswith("modeling_florence2.py"):
                 return get_imports(filename)
@@ -138,24 +139,37 @@ class FlorenceEngine:
         parsed = self.processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
         return parsed[task_prompt]
 
+# ---------------- HELPER: ODD DIM FIX ----------------
+def fix_odd_dims(frame):
+    """Aggressively crops 1px if dimensions are odd to prevent swscaler errors."""
+    if frame is None: return None
+    h, w = frame.shape[:2]
+    # Check modulo 2
+    trim_h = h % 2
+    trim_w = w % 2
+    
+    if trim_h > 0 or trim_w > 0:
+        return frame[:h-trim_h, :w-trim_w]
+    return frame
+
 # ---------------- GUI ----------------
 class ForgeApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(f"{APP_NAME} v{VERSION}")
-        root.geometry("1250x900")
+        root.geometry("1280x900")
         root.configure(bg=BG)
-        root.option_add("*Font", ("Segoe UI", 10)) # More modern font if avail
+        root.option_add("*Font", ("Segoe UI", 10))
         root.protocol("WM_DELETE_WINDOW", self.on_close) 
 
         self.engine = FlorenceEngine()
         self.is_running = False 
-        
         self.config = self.load_config()
 
-        # State Variables
+        # State
         self.editor_files = []
         self.current_editor_index = -1
+        self.current_editor_img_obj = None # To hold PIL object for metadata
         
         self.cap = None
         self.video_path = None
@@ -205,8 +219,7 @@ class ForgeApp:
             CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(self.config, f, indent=4)
-        except Exception as e:
-            print(f"Config Save Error: {e}")
+        except Exception as e: print(f"Config Error: {e}")
 
     # --- UI BUILDING ---
     def build_ui(self):
@@ -214,8 +227,6 @@ class ForgeApp:
         
         # Header
         header = tk.Frame(main, bg=BG); header.pack(side="top", fill="x", padx=20, pady=15)
-        
-        # Left Header
         hl = tk.Frame(header, bg=BG); hl.pack(side="left")
         tk.Label(hl, text=APP_NAME, bg=BG, fg=ACCENT, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         self.res_frame = tk.Frame(hl, bg=BG); self.res_frame.pack(anchor="w", pady=(5,0))
@@ -224,7 +235,6 @@ class ForgeApp:
         self.lbl_vram = tk.Label(self.res_frame, text="VRAM: ...", bg=BG, fg=WARNING, font=("Consolas", 9))
         self.lbl_vram.pack(side="left")
 
-        # Right Header
         hr = tk.Frame(header, bg=BG); hr.pack(side="right")
         self.model_var = tk.StringVar(value=DEFAULTS["model_name"])
         ttk.Combobox(hr, textvariable=self.model_var, values=list(MODELS.keys()), state="readonly", width=25).pack(side="left", padx=10)
@@ -237,51 +247,39 @@ class ForgeApp:
         # Tabs
         self.content = tk.Frame(main, bg=BG); self.content.pack(side="bottom", fill="both", expand=True)
         self.tabs = {}; self.btns = {}; self.curr_tab = None
-        
         bar = tk.Frame(main, bg=BG); bar.pack(side="top", fill="x", padx=20)
-        tabs_list = ["Video Extractor", "Smart Cropping", "Batch Captioning", "Manual Edit"]
         
-        for n in tabs_list:
+        for n in ["Video Extractor", "Smart Cropping", "Batch Captioning", "Manual Edit"]:
             self.tabs[n] = tk.Frame(self.content, bg=BG)
             b = tk.Label(bar, text=n, bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"), cursor="hand2", padx=15, pady=10)
             b.pack(side="left"); b.bind("<Button-1>", lambda e, x=n: self.switch_tab(x))
             self.btns[n] = b
-        
         tk.Frame(main, bg=INPUT, height=2).pack(side="top", fill="x") # Separator
         
-        self.build_video_tab()
-        self.build_crop_tab()
-        self.build_batch_tab()
-        self.build_editor_tab()
+        self.build_video_tab(); self.build_crop_tab(); self.build_batch_tab(); self.build_editor_tab()
         self.switch_tab("Video Extractor")
 
     def monitor_resources(self):
         try:
             vm = psutil.virtual_memory()
-            # Linux calculation: Used = Total - Available
-            used_gb = (vm.total - vm.available) / (1024**3)
-            total_gb = vm.total / (1024**3)
+            used_gb = (vm.total - vm.available) / (1024**3); total_gb = vm.total / (1024**3)
             self.lbl_ram.config(text=f"RAM: {used_gb:.1f}/{total_gb:.0f} GB")
             if torch.cuda.is_available():
-                res_gb = torch.cuda.memory_reserved(0) / (1024**3)
-                tot_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                res_gb = torch.cuda.memory_reserved(0) / (1024**3); tot_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
                 self.lbl_vram.config(text=f"VRAM: {res_gb:.1f}/{tot_vram:.0f} GB")
             else: self.lbl_vram.config(text="GPU: N/A")
         except: pass
         self.root.after(1000, self.monitor_resources)
 
     def on_close(self):
-        self.save_config()
-        self.is_running = False
+        self.save_config(); self.is_running = False
         if self.cap: self.cap.release()
         self.engine.unload()
         self.root.destroy()
 
     def switch_tab(self, name):
         if self.curr_tab: self.tabs[self.curr_tab].pack_forget(); self.btns[self.curr_tab].config(fg=DIM, bg=BG)
-        self.curr_tab = name
-        self.tabs[name].pack(fill="both", expand=True)
-        self.btns[name].config(fg=HIGHLIGHT, bg=BG)
+        self.curr_tab = name; self.tabs[name].pack(fill="both", expand=True); self.btns[name].config(fg=HIGHLIGHT, bg=BG)
 
     # --- ENGINE ---
     def toggle_engine(self):
@@ -292,29 +290,21 @@ class ForgeApp:
     def update_load_status(self, msg):
         self.root.after(0, lambda: self.lbl_status.config(text=msg))
         if msg == "Ready.":
-            self.root.after(0, lambda: [
-                self.btn_load.pack_forget(), 
-                self.lbl_status.config(fg=SUCCESS, text=f"Online: {self.model_var.get()}")
-            ])
+            self.root.after(0, lambda: [self.btn_load.pack_forget(), self.lbl_status.config(fg=SUCCESS, text=f"Online: {self.model_var.get()}")])
 
     # ==========================
     # TAB: VIDEO EXTRACTOR
     # ==========================
     def build_video_tab(self):
         f = self.tabs["Video Extractor"]
-        
-        # Toolbar
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         tk.Button(t, text="Select Source Folder", bg=ACCENT, fg=BG, bd=0, command=self.vid_browse_src).pack(side="left", padx=5, ipady=5)
         tk.Button(t, text="Set Output Folder", bg=CARD, fg=TEXT, bd=0, command=self.vid_browse_out).pack(side="left", padx=5, ipady=5)
         self.lbl_vid_info = tk.Label(t, text="No Video", bg=BG, fg=DIM); self.lbl_vid_info.pack(side="left", padx=15)
 
         pane = tk.Frame(f, bg=BG); pane.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        # Left Column
         left = tk.Frame(pane, bg=BG, width=320); left.pack(side="left", fill="y", padx=(0,10))
         
-        # Video List
         vf = tk.LabelFrame(left, text=" Videos ", bg=BG, fg=TEXT, font=("Segoe UI", 9, "bold"))
         vf.pack(side="top", fill="both", expand=True, pady=(0,10))
         self.vid_search = tk.Entry(vf, bg=INPUT, fg=TEXT, bd=0); self.vid_search.pack(fill="x", padx=5, pady=5)
@@ -324,19 +314,16 @@ class ForgeApp:
         self.lst_vid.bind('<<ListboxSelect>>', self.vid_select)
         sb1 = tk.Scrollbar(vf, command=self.lst_vid.yview); sb1.pack(side="right", fill="y"); self.lst_vid.config(yscrollcommand=sb1.set)
 
-        # Frame List
         sf = tk.LabelFrame(left, text=" Extracted Frames ", bg=BG, fg=HIGHLIGHT, font=("Segoe UI", 9, "bold"))
         sf.pack(side="bottom", fill="both", expand=True)
         self.lst_frames = tk.Listbox(sf, bg=CARD, fg=TEXT, bd=0, highlightthickness=0)
         self.lst_frames.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         sb2 = tk.Scrollbar(sf, command=self.lst_frames.yview); sb2.pack(side="right", fill="y"); self.lst_frames.config(yscrollcommand=sb2.set)
 
-        # Right Column (Player)
         right = tk.Frame(pane, bg=BG); right.pack(side="left", fill="both", expand=True)
         self.vid_canvas = tk.Label(right, bg="black", text="Select a video", fg="white")
         self.vid_canvas.pack(fill="both", expand=True)
         
-        # Controls
         ctrl = tk.Frame(right, bg=BG); ctrl.pack(fill="x", pady=10)
         self.vid_slider = ttk.Scale(ctrl, from_=0, to=100, orient="horizontal", command=self.vid_slide)
         self.vid_slider.pack(fill="x", pady=5)
@@ -351,68 +338,47 @@ class ForgeApp:
         tk.Button(c_btns, text="SNAPSHOT", bg=SUCCESS, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_snapshot).pack(side="left", padx=20)
         self.btn_extract_all = tk.Button(c_btns, text="EXTRACT ALL", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_extract_all)
         self.btn_extract_all.pack(side="left", padx=5)
-        
         self.vid_progress = ttk.Progressbar(right, mode="determinate"); self.vid_progress.pack(fill="x", padx=10, pady=5)
 
-        # Init
         if self.config.get("last_video_source"):
-            self.video_source_dir = Path(self.config["last_video_source"])
-            self.vid_refresh_files()
+            self.video_source_dir = Path(self.config["last_video_source"]); self.vid_refresh_files()
         if self.config.get("last_video_output"):
             self.video_output_dir = Path(self.config["last_video_output"])
 
     def vid_browse_src(self):
         d = filedialog.askdirectory(initialdir=self.config.get("last_video_source", "/"))
-        if d:
-            self.video_source_dir = Path(d)
-            self.config["last_video_source"] = d
-            self.save_config()
-            self.vid_refresh_files()
+        if d: self.video_source_dir = Path(d); self.config["last_video_source"] = d; self.save_config(); self.vid_refresh_files()
 
     def vid_browse_out(self):
         d = filedialog.askdirectory(initialdir=self.config.get("last_video_output", "/"))
-        if d:
-            self.video_output_dir = Path(d)
-            self.config["last_video_output"] = d
-            self.save_config()
-            self.vid_refresh_saved()
+        if d: self.video_output_dir = Path(d); self.config["last_video_output"] = d; self.save_config(); self.vid_refresh_saved()
 
     def vid_refresh_files(self):
-        self.lst_vid.delete(0, tk.END)
-        self.video_files_cache = []
+        self.lst_vid.delete(0, tk.END); self.video_files_cache = []
         if not self.video_source_dir: return
         for ext in ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm"]:
             self.video_files_cache.extend(list(self.video_source_dir.glob(ext)))
-        self.video_files_cache.sort()
-        self.vid_filter(None)
+        self.video_files_cache.sort(); self.vid_filter(None)
 
     def vid_filter(self, event):
-        q = self.vid_search.get().lower()
-        self.lst_vid.delete(0, tk.END)
+        q = self.vid_search.get().lower(); self.lst_vid.delete(0, tk.END)
         for p in self.video_files_cache:
             if q in p.name.lower(): self.lst_vid.insert(tk.END, p.name)
 
     def vid_select(self, event):
         sel = self.lst_vid.curselection()
         if not sel: return
-        name = self.lst_vid.get(sel[0])
-        self.vid_load(self.video_source_dir / name)
+        self.vid_load(self.video_source_dir / self.lst_vid.get(sel[0]))
 
     def vid_load(self, path):
         if self.cap: self.cap.release()
         self.cap = cv2.VideoCapture(str(path))
-        self.video_path = path
-        self.video_total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.current_frame_pos = 0
-        self.vid_slider.configure(to=self.video_total_frames-1)
+        self.video_path = path; self.video_total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.current_frame_pos = 0; self.vid_slider.configure(to=self.video_total_frames-1)
         self.lbl_vid_info.config(text=f"{path.name} ({self.video_total_frames} fr)")
-        
         if not self.video_output_dir:
-            self.video_output_dir = path.parent / "extracted"
-            self.video_output_dir.mkdir(exist_ok=True)
-            
-        self.vid_refresh_saved()
-        self.vid_seek(0, update_slider=True)
+            self.video_output_dir = path.parent / "extracted"; self.video_output_dir.mkdir(exist_ok=True)
+        self.vid_refresh_saved(); self.vid_seek(0, update_slider=True)
 
     def vid_slide(self, val):
         if self.cap: self.vid_seek(int(float(val)), update_slider=False)
@@ -428,18 +394,13 @@ class ForgeApp:
         ret, frame = self.cap.read()
         
         if ret and frame is not None and frame.size > 0:
-            # FORCE EVEN DIMENSIONS (Fixes swscaler bug)
-            h, w = frame.shape[:2]
-            if w % 2 != 0 or h % 2 != 0: frame = frame[:h-(h%2), :w-(w%2)]
-            
+            frame = fix_odd_dims(frame) # FIX: Apply cropping immediately
             self.current_video_frame = frame
-            # Display resize
             try:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(rgb)
                 w, h = img.size; max_h = 500
-                if h > max_h:
-                    ratio = max_h/h; img = img.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
+                if h > max_h: ratio = max_h/h; img = img.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
                 self.tk_vid_img = ImageTk.PhotoImage(img)
                 self.vid_canvas.config(image=self.tk_vid_img, text="")
             except: pass
@@ -452,7 +413,6 @@ class ForgeApp:
             name = f"{self.video_path.stem}_{self.current_frame_pos:06d}.jpg"
             cv2.imwrite(str(self.video_output_dir / name), self.current_video_frame)
             self.vid_refresh_saved()
-            # Flash
             orig = self.vid_canvas.cget("bg"); self.vid_canvas.config(bg=SUCCESS)
             self.root.after(100, lambda: self.vid_canvas.config(bg="black"))
 
@@ -461,34 +421,21 @@ class ForgeApp:
             self.is_running = False
             self.btn_extract_all.config(text="Stopping...", state="disabled")
         else:
-            self.is_running = True
-            self.btn_extract_all.config(text="STOP", bg=ERROR)
+            self.is_running = True; self.btn_extract_all.config(text="STOP", bg=ERROR)
             threading.Thread(target=self.vid_extract_thread, daemon=True).start()
 
     def vid_extract_thread(self):
         cap = cv2.VideoCapture(str(self.video_path))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        count = 0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); count = 0
         while cap.isOpened() and self.is_running:
             ret, frame = cap.read()
             if not ret: break
-            
-            h, w = frame.shape[:2]
-            if w%2!=0 or h%2!=0: frame = frame[:h-(h%2), :w-(w%2)]
-            
-            name = f"{self.video_path.stem}_{count:06d}.jpg"
-            cv2.imwrite(str(self.video_output_dir / name), frame)
+            frame = fix_odd_dims(frame) # FIX: Apply cropping in thread too
+            cv2.imwrite(str(self.video_output_dir / f"{self.video_path.stem}_{count:06d}.jpg"), frame)
             count += 1
-            if count % 20 == 0:
-                self.root.after(0, lambda c=count, t=total: self.vid_progress.configure(value=(c/t)*100))
-        
-        cap.release()
-        self.is_running = False
-        self.root.after(0, lambda: [
-            self.btn_extract_all.config(text="EXTRACT ALL", bg=HIGHLIGHT, state="normal"),
-            self.vid_progress.configure(value=0),
-            self.vid_refresh_saved()
-        ])
+            if count % 20 == 0: self.root.after(0, lambda c=count, t=total: self.vid_progress.configure(value=(c/t)*100))
+        cap.release(); self.is_running = False
+        self.root.after(0, lambda: [self.btn_extract_all.config(text="EXTRACT ALL", bg=HIGHLIGHT, state="normal"), self.vid_progress.configure(value=0), self.vid_refresh_saved()])
 
     def vid_refresh_saved(self):
         self.lst_frames.delete(0, tk.END)
@@ -497,14 +444,13 @@ class ForgeApp:
             for f in files: self.lst_frames.insert(tk.END, f.name)
 
     # ==========================
-    # TAB: SMART CROPPING (UPDATED)
+    # TAB: SMART CROPPING
     # ==========================
     def build_crop_tab(self):
         f = self.tabs["Smart Cropping"]; f.configure(padx=30, pady=20)
         
         self.crop_in = tk.StringVar(value=self.config.get("last_crop_in", ""))
         self.crop_out = tk.StringVar(value=self.config.get("last_crop_out", ""))
-        
         self.field(f, "Input Folder", self.crop_in, True)
         self.field(f, "Output Folder", self.crop_out, True)
         
@@ -540,8 +486,7 @@ class ForgeApp:
             self.is_running = False
             self.btn_crop.config(text="Stopping...", state="disabled")
         else:
-            self.save_config()
-            self.is_running = True
+            self.save_config(); self.is_running = True
             self.btn_crop.config(text="STOP", bg=ERROR)
             threading.Thread(target=self.crop_worker, daemon=True).start()
 
@@ -549,8 +494,6 @@ class ForgeApp:
         src = Path(self.crop_in.get()); dst = Path(self.crop_out.get()); dst.mkdir(exist_ok=True)
         imgs = list(src.glob("*.jpg")) + list(src.glob("*.png"))
         target = self.crop_target.get(); mode = self.crop_meth.get()
-        
-        # Color prep
         hc = self.pad_col.get().lstrip('#'); rgb = tuple(int(hc[i:i+2], 16) for i in (0, 2, 4)); bgr = (rgb[2], rgb[1], rgb[0])
 
         for i, path in enumerate(imgs):
@@ -558,40 +501,21 @@ class ForgeApp:
             try:
                 img_pil = Image.open(path).convert("RGB")
                 res = self.engine.run_task(img_pil, "<CAPTION_TO_PHRASE_GROUNDING>", target)
-                bboxes = res.get('bboxes', [])
-                
-                # If no object found, maybe take whole image? For now skip.
                 img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
                 
-                for idx, box in enumerate(bboxes):
+                for idx, box in enumerate(res.get('bboxes', [])):
                     x1, y1, x2, y2 = map(int, box)
-                    # Add margin
                     m = 20; x1=max(0,x1-m); y1=max(0,y1-m); x2=min(img_pil.width,x2+m); y2=min(img_pil.height,y2+m)
                     crop = img_cv[y1:y2, x1:x2]
                     
                     if "Bucket" in mode:
-                        # --- SMART BUCKET RESIZE ---
-                        # Logic: Resize to preserve aspect ratio but ensure dims are multiples of 64
-                        # Target area roughly 1024*1024 = 1MP
-                        h, w = crop.shape[:2]
-                        aspect = w / h
-                        target_area = 1024 * 1024
-                        
-                        new_h = int(np.sqrt(target_area / aspect))
-                        new_w = int(new_h * aspect)
-                        
-                        # Snap to 64
-                        new_w = round(new_w / 64) * 64
-                        new_h = round(new_h / 64) * 64
-                        
-                        # Minimum size safety
+                        h, w = crop.shape[:2]; aspect = w / h; target_area = 1024 * 1024
+                        new_h = int(np.sqrt(target_area / aspect)); new_w = int(new_h * aspect)
+                        new_w = round(new_w / 64) * 64; new_h = round(new_h / 64) * 64
                         if new_w < 64: new_w = 64
                         if new_h < 64: new_h = 64
-                        
                         final = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-                        
                     else:
-                        # --- SIMPLE PAD 1024 ---
                         final_sz = 1024
                         ch, cw = crop.shape[:2]; scale = final_sz/max(ch, cw)
                         nw, nh = int(cw*scale), int(ch*scale); resized = cv2.resize(crop, (nw, nh))
@@ -599,7 +523,6 @@ class ForgeApp:
                         final = cv2.copyMakeBorder(resized, dh//2, dh-(dh//2), dw//2, dw-(dw//2), cv2.BORDER_CONSTANT, value=bgr)
                     
                     cv2.imwrite(str(dst / f"{path.stem}_{idx}.jpg"), final)
-                
                 self.root.after(0, lambda x=i, t=len(imgs): self.crop_log.config(text=f"Processing {x+1}/{t}"))
             except Exception as e: print(e)
             
@@ -611,7 +534,6 @@ class ForgeApp:
     # ==========================
     def build_batch_tab(self):
         f = self.tabs["Batch Captioning"]; f.configure(padx=30, pady=20)
-        
         cfg = tk.Frame(f, bg=BG); cfg.pack(fill="x")
         tk.Label(cfg, text="Caption Mode:", bg=BG, fg=DIM).pack(side="left")
         self.cap_mode = tk.StringVar(value=DEFAULTS["caption_mode"])
@@ -621,7 +543,6 @@ class ForgeApp:
         t1 = tk.Frame(tf, bg=BG); t1.pack(side="left", fill="x", expand=True, padx=(0,5))
         tk.Label(t1, text="Prefix (Trigger Word)", bg=BG, fg=SUCCESS, font=("Segoe UI", 9, "bold")).pack(anchor="w")
         self.txt_prefix = tk.Entry(t1, bg=INPUT, fg=TEXT, bd=0); self.txt_prefix.pack(fill="x", ipady=5)
-        
         t2 = tk.Frame(tf, bg=BG); t2.pack(side="left", fill="x", expand=True, padx=(5,0))
         tk.Label(t2, text="Suffix (Style Tags)", bg=BG, fg=DIM).pack(anchor="w")
         self.txt_suffix = tk.Entry(t2, bg=INPUT, fg=TEXT, bd=0); self.txt_suffix.pack(fill="x", ipady=5)
@@ -640,11 +561,9 @@ class ForgeApp:
         if not self.batch_dir.get(): return
         self.save_config()
         if self.is_running:
-            self.is_running = False
-            self.btn_batch.config(text="Stopping...", state="disabled")
+            self.is_running = False; self.btn_batch.config(text="Stopping...", state="disabled")
         else:
-            self.is_running = True
-            self.btn_batch.config(text="STOP", bg=ERROR)
+            self.is_running = True; self.btn_batch.config(text="STOP", bg=ERROR)
             threading.Thread(target=self.batch_worker, daemon=True).start()
 
     def batch_worker(self):
@@ -673,9 +592,13 @@ class ForgeApp:
     # ==========================
     def build_editor_tab(self):
         f = self.tabs["Manual Edit"]
-        
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         tk.Button(t, text="Open Folder", bg=CARD, fg=TEXT, bd=0, command=self.ed_load_btn).pack(side="left", padx=5, ipady=5)
+        
+        # --- NEW: METADATA BUTTON ---
+        self.btn_meta = tk.Button(t, text="METADATA", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.ed_show_meta, state="disabled")
+        self.btn_meta.pack(side="left", padx=20, ipady=5)
+
         tk.Label(t, text="(Ctrl+S to Save, Alt+Arrows to Nav)", bg=BG, fg=DIM).pack(side="right")
         
         pane = tk.Frame(f, bg=BG); pane.pack(fill="both", expand=True, padx=10)
@@ -696,8 +619,7 @@ class ForgeApp:
         tk.Button(b, text="< Prev", bg=CARD, fg=TEXT, bd=0, command=lambda: self.editor_nav(-1)).pack(side="left", ipady=5, ipadx=10)
         tk.Button(b, text="Next >", bg=CARD, fg=TEXT, bd=0, command=lambda: self.editor_nav(1)).pack(side="left", padx=5, ipady=5, ipadx=10)
         
-        if self.config.get("last_editor_dir"):
-            self.load_ed_dir(Path(self.config["last_editor_dir"]))
+        if self.config.get("last_editor_dir"): self.load_ed_dir(Path(self.config["last_editor_dir"]))
 
     def ed_load_btn(self):
         d = filedialog.askdirectory(initialdir=self.config.get("last_editor_dir", "/"))
@@ -723,8 +645,17 @@ class ForgeApp:
     def load_ed_item(self, index):
         self.current_editor_index = index; path = self.editor_files[index]
         try:
-            img = Image.open(path); w, h = img.size; max_h = 500
-            if h > max_h: ratio = max_h/h; img = img.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
+            self.current_editor_img_obj = Image.open(path)
+            # Enable Meta button if info present
+            if 'workflow' in self.current_editor_img_obj.info or 'prompt' in self.current_editor_img_obj.info:
+                self.btn_meta.config(state="normal", bg=WARNING)
+            else:
+                self.btn_meta.config(state="disabled", bg=CARD)
+            
+            w, h = self.current_editor_img_obj.size; max_h = 500
+            if h > max_h: ratio = max_h/h; img = self.current_editor_img_obj.resize((int(w*ratio), int(h*ratio)), Image.Resampling.LANCZOS)
+            else: img = self.current_editor_img_obj
+            
             self.tk_ed_img = ImageTk.PhotoImage(img); self.ed_preview.config(image=self.tk_ed_img, text="")
         except: self.ed_preview.config(image="", text="Err")
         txt = path.with_suffix(".txt"); self.ed_txt.delete("1.0", tk.END)
@@ -735,6 +666,36 @@ class ForgeApp:
         path = self.editor_files[self.current_editor_index]
         path.with_suffix(".txt").write_text(self.ed_txt.get("1.0", tk.END).strip(), encoding="utf-8")
         orig = self.ed_txt.cget("bg"); self.ed_txt.config(bg=SUCCESS); self.root.after(200, lambda: self.ed_txt.config(bg=orig))
+
+    def ed_show_meta(self):
+        """Show ComfyUI Metadata in a popup"""
+        if not self.current_editor_img_obj: return
+        
+        info = self.current_editor_img_obj.info
+        content = ""
+        
+        if 'prompt' in info:
+            try:
+                j = json.loads(info['prompt'])
+                content += "=== PROMPT (API Format) ===\n" + json.dumps(j, indent=2) + "\n\n"
+            except: content += "=== PROMPT (Raw) ===\n" + str(info['prompt']) + "\n\n"
+            
+        if 'workflow' in info:
+            try:
+                j = json.loads(info['workflow'])
+                content += "=== WORKFLOW (Nodes) ===\n" + json.dumps(j, indent=2) + "\n\n"
+            except: content += "=== WORKFLOW (Raw) ===\n" + str(info['workflow']) + "\n\n"
+            
+        if not content: content = "No ComfyUI metadata found."
+        
+        # Popup Window
+        top = tk.Toplevel(self.root)
+        top.title("Metadata Inspector")
+        top.geometry("800x600")
+        top.configure(bg=BG)
+        st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 9))
+        st.pack(fill="both", expand=True)
+        st.insert(tk.END, content)
 
     # --- HELPERS ---
     def field(self, p, l, v, b):
