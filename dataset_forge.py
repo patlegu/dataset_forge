@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DATASET FORGE v1.2
+DATASET FORGE v1.3
 (Formerly Joschek Fork)
 A complete, local suite for AI Dataset preparation.
 
 Features:
-- NEW: "Pretty" Metadata Inspector with Syntax Highlighting for ComfyUI
+- NEW: Interactive Treeview for ComfyUI Metadata (Explore Nodes & Params)
+- NEW: Export Workflow to .json (Drag & Drop compatible with ComfyUI)
 - FIX: Advanced suppression of 'swscaler' warnings
 - Native Florence-2 (Base/Large)
 - Video Frame Extraction
@@ -15,7 +16,7 @@ Features:
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, colorchooser, simpledialog, scrolledtext
+from tkinter import ttk, messagebox, filedialog, colorchooser, simpledialog
 import threading
 import os
 import sys
@@ -40,7 +41,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 
 # ---------------- CONFIGURATION ----------------
 APP_NAME = "Dataset Forge"
-VERSION = "1.2"
+VERSION = "1.3"
 CONFIG_FILE = Path.home() / ".config" / "dataset_forge.json"
 
 MODELS = {
@@ -187,6 +188,10 @@ class ForgeApp:
         s.configure("TCombobox", fieldbackground=INPUT, background=INPUT, foreground=TEXT, arrowcolor=TEXT)
         self.root.option_add("*TCombobox*Listbox*Background", CARD)
         self.root.option_add("*TCombobox*Listbox*Foreground", TEXT)
+        
+        # Treeview Colors
+        s.configure("Treeview", background=INPUT, foreground=TEXT, fieldbackground=INPUT, borderwidth=0)
+        s.map('Treeview', background=[('selected', ACCENT)])
         s.configure("Horizontal.TScale", background=BG, troughcolor=CARD)
 
     def bind_shortcuts(self):
@@ -443,6 +448,7 @@ class ForgeApp:
     # ==========================
     def build_crop_tab(self):
         f = self.tabs["Smart Cropping"]; f.configure(padx=30, pady=20)
+        
         self.crop_in = tk.StringVar(value=self.config.get("last_crop_in", ""))
         self.crop_out = tk.StringVar(value=self.config.get("last_crop_out", ""))
         self.field(f, "Input Folder", self.crop_in, True)
@@ -660,49 +666,87 @@ class ForgeApp:
         path.with_suffix(".txt").write_text(self.ed_txt.get("1.0", tk.END).strip(), encoding="utf-8")
         orig = self.ed_txt.cget("bg"); self.ed_txt.config(bg=SUCCESS); self.root.after(200, lambda: self.ed_txt.config(bg=orig))
 
-    # --- METADATA INSPECTOR ---
+    # --- METADATA INSPECTOR (TREEVIEW) ---
     def ed_show_meta(self):
         if not self.current_editor_img_obj: return
-        
         info = self.current_editor_img_obj.info
-        top = tk.Toplevel(self.root); top.title("ComfyUI Metadata"); top.geometry("900x700"); top.configure(bg=BG)
-        st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 10)); st.pack(fill="both", expand=True)
         
-        # Configure Highlighting Tags
-        st.tag_config("NODE", foreground=ACCENT, font=("Consolas", 10, "bold"))
-        st.tag_config("KEY", foreground=WARNING)
-        st.tag_config("VAL", foreground=SUCCESS)
-        st.tag_config("HEADER", foreground=HIGHLIGHT, font=("Segoe UI", 12, "bold"))
+        top = tk.Toplevel(self.root); top.title("ComfyUI Metadata Inspector"); top.geometry("1000x700"); top.configure(bg=BG)
+        
+        # Toolbar
+        tb = tk.Frame(top, bg=BG); tb.pack(fill="x", padx=10, pady=5)
+        
+        def copy_raw(key):
+            if key in info:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(info[key])
+                messagebox.showinfo("Copied", f"{key} copied to clipboard!")
 
-        def pretty_print(data, indent=0):
+        def export_json():
+            if 'workflow' in info:
+                f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+                if f:
+                    with open(f, 'w') as out:
+                        out.write(info['workflow'])
+                    messagebox.showinfo("Saved", "Workflow saved! Drag this file into ComfyUI.")
+
+        tk.Button(tb, text="Copy Prompt", bg=CARD, fg=TEXT, command=lambda: copy_raw('prompt')).pack(side="left", padx=5)
+        tk.Button(tb, text="Copy Workflow", bg=CARD, fg=TEXT, command=lambda: copy_raw('workflow')).pack(side="left", padx=5)
+        tk.Button(tb, text="Export .json (For Drag&Drop)", bg=ACCENT, fg=BG, command=export_json).pack(side="right", padx=5)
+
+        # Treeview
+        tree = ttk.Treeview(top, columns=("Value"), show="tree headings")
+        tree.heading("#0", text="Node / Key"); tree.heading("Value", text="Value")
+        tree.column("#0", width=300); tree.column("Value", width=600)
+        tree.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Scrollbars
+        vsb = ttk.Scrollbar(top, orient="vertical", command=tree.yview)
+        vsb.place(relx=1.0, relheight=1.0, anchor="ne")
+        tree.configure(yscrollcommand=vsb.set)
+
+        def populate_tree(parent, data):
             if isinstance(data, dict):
                 for k, v in data.items():
-                    if isinstance(v, dict) and "class_type" in v: # It's a Node
-                        st.insert(tk.END, "  " * indent + f"[{k}] {v['class_type']}\n", "NODE")
-                        if "inputs" in v:
-                            pretty_print(v["inputs"], indent + 1)
-                    else:
-                        st.insert(tk.END, "  " * indent + f"{k}: ", "KEY")
-                        st.insert(tk.END, f"{v}\n", "VAL")
+                    node = tree.insert(parent, "end", text=str(k), open=False)
+                    populate_tree(node, v)
+            elif isinstance(data, list):
+                for i, v in enumerate(data):
+                    node = tree.insert(parent, "end", text=f"[{i}]", open=False)
+                    populate_tree(node, v)
             else:
-                st.insert(tk.END, f"{data}\n", "VAL")
+                tree.item(parent, values=(str(data),))
 
-        # 1. PARSE PROMPT (The actual generation params)
-        if 'prompt' in info:
-            st.insert(tk.END, "=== GENERATION PARAMETERS (API) ===\n\n", "HEADER")
-            try:
-                j = json.loads(info['prompt'])
-                pretty_print(j)
-            except: st.insert(tk.END, str(info['prompt']))
-            st.insert(tk.END, "\n" + "-"*50 + "\n\n")
-
-        # 2. PARSE WORKFLOW (The Graph)
+        # Parse Workflow
         if 'workflow' in info:
-            st.insert(tk.END, "=== WORKFLOW GRAPH (JSON) ===\n\n", "HEADER")
             try:
-                j = json.loads(info['workflow'])
-                st.insert(tk.END, json.dumps(j, indent=2)) # Dump full graph
-            except: st.insert(tk.END, str(info['workflow']))
+                wf = json.loads(info['workflow'])
+                root_node = tree.insert("", "end", text="WORKFLOW (Graph)", open=True)
+                # Workflow is usually a list of nodes or a dict
+                if isinstance(wf, dict) and "nodes" in wf:
+                    for node in wf["nodes"]:
+                        nid = node.get("id", "?")
+                        ntype = node.get("type", "Unknown")
+                        n_item = tree.insert(root_node, "end", text=f"[{nid}] {ntype}", open=False)
+                        # Widgets values
+                        if "widgets_values" in node:
+                            w_node = tree.insert(n_item, "end", text="Params", open=False)
+                            populate_tree(w_node, node["widgets_values"])
+                else:
+                    populate_tree(root_node, wf)
+            except: pass
+
+        # Parse Prompt (API)
+        if 'prompt' in info:
+            try:
+                pr = json.loads(info['prompt'])
+                root_node = tree.insert("", "end", text="PROMPT (API)", open=False)
+                for nid, nops in pr.items():
+                    ntype = nops.get("class_type", "Unknown")
+                    n_item = tree.insert(root_node, "end", text=f"[{nid}] {ntype}", open=False)
+                    if "inputs" in nops:
+                        populate_tree(n_item, nops["inputs"])
+            except: pass
 
     # --- HELPERS ---
     def field(self, p, l, v, b):
