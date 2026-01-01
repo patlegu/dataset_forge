@@ -81,7 +81,7 @@ python dataset_forge.py
 - Use the slider or **< >** buttons to navigate.
 - Click **SNAPSHOT** to save the current frame, or **EXTRACT ALL** to dump the whole video frames.
 
-![Video Extractor Interface](images/video_extractor.png){ width="60%" }
+![Video Extractor Interface](images/video_extractor.png)
 
 ### Smart Cropping:
 - Choose your extracted frames folder as Input.  
