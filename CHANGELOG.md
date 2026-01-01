@@ -18,6 +18,24 @@ This document tracks the project's modification history as well as future improv
 
 ## 📋 Version History
 
+### [v1.7.2] - 2026-01-01
+
+#### 🔧 Others
+- - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+
+### [v1.7.1] - 2026-01-01
+
+#### 🔧 Others
+- - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+
+### [v1.7] - 2026-01-01
+
+#### 🔧 Others
+- - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+
 ### [v1.6.0] - 2026-01-01
 #### ✨ New Features
 - Feature: 'BATCH FIX FOLDER'. Scans the entire source folder, detects videos

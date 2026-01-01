@@ -53,16 +53,17 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.7"
+__version__ = "1.7.2"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
+# v1.7.2 - Fix: Forced clipboard update in 'COPY ALL INFO' for WSL compatibility.
+# v1.7.1 - UX: Added 'COPY ALL INFO' button to Video Metadata window.
 # v1.7   - Feature: Added 'METADATA / INFO' button in Video Extractor tab.
-#          Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
-# v1.6   - Feature: 'BATCH FIX FOLDER'. Scans & repairs odd-dimension videos in bulk.
+# v1.6   - Feature: 'BATCH FIX FOLDER'.
 # v1.5.4 - UX Fix: 'Scroll Memory'.
 # v1.5.3 - Feature: 'Smart Swap'.
 # v1.5.2 - Feature: 'Silent Cleanup'.
@@ -102,7 +103,6 @@ DEFAULTS = {
     "pad_color": "#000000",
     "caption_mode": "<DETAILED_CAPTION>", 
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    # Persistent Paths
     "last_batch_dir": "",
     "last_crop_in": "",
     "last_crop_out": "",
@@ -129,7 +129,6 @@ HIGHLIGHT = "#cba6f7"
 # -------------------
 
 class FlorenceEngine:
-    """Handles the Florence-2 Model loading and inference."""
     def __init__(self):
         self.model = None
         self.processor = None
@@ -146,7 +145,6 @@ class FlorenceEngine:
 
         status_callback(f"Loading {model_key}...")
         
-        # Patch for Flash Attention to use SDPA
         def fixed_get_imports(filename):
             if not str(filename).endswith("modeling_florence2.py"):
                 return get_imports(filename)
@@ -195,16 +193,10 @@ class FlorenceEngine:
 
 
 def fix_odd_dims(frame):
-    """
-    Helper: Aggressively crops 1px if dimensions are odd 
-    to prevent swscaler errors in FFmpeg/OpenCV.
-    """
     if frame is None: return None
     h, w = frame.shape[:2]
-    trim_h = h % 2
-    trim_w = w % 2
-    if trim_h > 0 or trim_w > 0:
-        return frame[:h-trim_h, :w-trim_w]
+    trim_h = h % 2; trim_w = w % 2
+    if trim_h > 0 or trim_w > 0: return frame[:h-trim_h, :w-trim_w]
     return frame
 
 
@@ -225,7 +217,7 @@ class ForgeApp:
         self.is_running = False 
         self.config = self.load_config()
 
-        # Application State
+        # State
         self.editor_files = []
         self.current_editor_index = -1
         self.current_editor_img_obj = None 
@@ -368,7 +360,6 @@ class ForgeApp:
         self.btn_batch_fix = tk.Button(tr, text="BATCH FIX FOLDER", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_batch_fix_tool)
         self.btn_batch_fix.pack(side="right", padx=5, ipady=5)
         
-        # REPAIR & METADATA Buttons
         tk.Button(tr, text="METADATA / INFO", bg=CARD, fg=TEXT, bd=0, font=("Segoe UI", 9), command=self.vid_show_metadata).pack(side="right", padx=5, ipady=5)
         tk.Button(tr, text="REPAIR (Single)", bg=WARNING, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_repair_tool).pack(side="right", padx=5, ipady=5)
         
@@ -503,21 +494,14 @@ class ForgeApp:
     def vid_show_metadata(self):
         if not self.video_path or not self.video_path.exists(): return
         
-        # We try to use ffprobe to get detailed JSON info
         cmd = [
-            "ffprobe", 
-            "-v", "quiet", 
-            "-print_format", "json", 
-            "-show_format", 
-            "-show_streams", 
-            str(self.video_path)
+            "ffprobe", "-v", "quiet", "-print_format", "json", 
+            "-show_format", "-show_streams", str(self.video_path)
         ]
-        
         try:
             result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             data = json.loads(result.stdout.decode('utf-8'))
             
-            # Formating output
             out_txt = f"FILE: {self.video_path.name}\n"
             out_txt += f"SIZE: {self.video_path.stat().st_size / (1024*1024):.2f} MB\n"
             
@@ -526,12 +510,9 @@ class ForgeApp:
                 out_txt += f"CONTAINER: {fmt.get('format_name')}\n"
                 out_txt += f"DURATION: {fmt.get('duration')} sec\n"
                 out_txt += f"BITRATE: {int(fmt.get('bit_rate', 0))//1000} kbps\n\n"
-                
-                # Metadata Tags (ComfyUI might hide stuff here)
                 if 'tags' in fmt:
                     out_txt += "--- GLOBAL METADATA TAGS ---\n"
-                    for k, v in fmt['tags'].items():
-                        out_txt += f"[{k}]: {v}\n"
+                    for k, v in fmt['tags'].items(): out_txt += f"[{k}]: {v}\n"
                     out_txt += "\n"
 
             if 'streams' in data:
@@ -542,15 +523,26 @@ class ForgeApp:
                         out_txt += f"DIMENSIONS: {s.get('width')}x{s.get('height')}\n"
                         out_txt += f"FPS: {s.get('r_frame_rate')}\n"
                     if 'tags' in s:
-                        for k, v in s['tags'].items():
-                            out_txt += f"  [{k}]: {v}\n"
+                        for k, v in s['tags'].items(): out_txt += f"  [{k}]: {v}\n"
                     out_txt += "\n"
 
-            # Show in window
             top = tk.Toplevel(self.root)
             top.title(f"Video Metadata - {self.video_path.name}")
             top.geometry("600x700")
             top.configure(bg=BG)
+
+            # Toolbar with Copy Button
+            tb = tk.Frame(top, bg=BG); tb.pack(fill="x", padx=10, pady=5)
+            
+            def copy_all():
+                content = st.get("1.0", tk.END)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(content)
+                self.root.update() # FORCE UPDATE FOR WSL
+                messagebox.showinfo("Copied", "All metadata copied to clipboard!")
+
+            tk.Button(tb, text="COPY ALL INFO", bg=ACCENT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=copy_all).pack(side="right")
+
             st = scrolledtext.ScrolledText(top, bg=INPUT, fg=TEXT, font=("Consolas", 10))
             st.pack(fill="both", expand=True)
             st.insert(tk.END, out_txt)
