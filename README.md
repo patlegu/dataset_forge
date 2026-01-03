@@ -62,10 +62,15 @@ It started as a fork of [Joschek's tools](https://civitai.com/articles/24233) bu
       source venv/bin/activate
   ```
 3. **Install Dependencies:**
+Important note for installation (CUDA):  
+If you want to use your NVIDIA graphics card (which is recommended for Florence-2),  
+it's best to install PyTorch separately before the others; otherwise, pip might install the CPU version by default.
+
+The ideal command to install everything at once (Windows/Linux):
 Pytorch can be found at [https://download.pytorch.org/whl/cu118](https://download.pytorch.org/whl/cu118)  
   ```bash
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    pip install transformers pillow opencv-python numpy psutil timm einops
+    pip install -r requirements.txt
     (Note: timm and einops are required for Florence-2 model loading).
   ```
 4. **Run the App:**

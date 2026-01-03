@@ -4,6 +4,10 @@ This document tracks the project's modification history as well as future improv
 
 ## 🚀 Roadmap (Future Evolutions)
 
+### Modifications In Progress
+- [ ] **Refresh Video List**: Add a fefresh button to update the list of the video to avoid closing the application.
+- [ ] **Add Update Fonction in Batch Captioning**: Add an update function in Batch Captioning instead of make another reload of application.
+
 ### Short Term
 - [ ] **Drag & Drop Support**: Allow dragging and dropping video/image folders directly into the interface.
 - [ ] **Batch Queue**: Ability to run captioning/cropping tasks in the background on multiple folders sequentially.

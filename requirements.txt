@@ -1,0 +1,22 @@
+# -----------------------------------------------------------------------------
+# Dataset_Forge - Requirements (Linux/WSL)
+# -----------------------------------------------------------------------------
+# The MIT License (MIT)
+# Copyright (c) 2026 by Patrice Le Guyader
+# https://github.com/patlegu/dataset_forge"
+# -----------------------------------------------------------------------------
+# Core ML & Vision
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+transformers>=4.38.0
+timm>=0.9.12
+einops>=0.7.0
+
+# Image & Video Processing
+pillow>=10.0.0
+opencv-python>=4.9.0.80
+numpy>=1.24.0
+
+# System Utilities
+psutil>=5.9.0
