@@ -53,26 +53,19 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.7.6"
+__version__ = "1.8.0"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.7.6 - Fix: 'Recursive JSON Unpacker'. Now drills down into nested JSON strings.
-#          Solves the issue where ComfyUI stores the 'prompt' workflow as a string 
-#          INSIDE the comment JSON, causing "wall of text" with escaped quotes.
-# v1.7.5 - Fix: 'Smart JSON Unescaper'. Backported from v1.9.
-#          Detects and cleans escaped JSON strings (e.g. "{\"prompt\":...) in
-#          video metadata to display readable ComfyUI workflows/prompts.
-# v1.7.4 - Fix: 'Smart JSON Decoder'. Enhanced metadata parser to handle "escaped" JSON
-#          strings in video tags (e.g. "{\"prompt\":..."). Now properly unescapes and
-#          formats ComfyUI workflows found in MP4 comments.
-# v1.7.3 - Feature: 'Smart JSON Formatting'. The Video Metadata viewer now detects 
-#          if a tag (like 'comment') contains a ComfyUI workflow and pretty-prints it.
-#          Fix: Added Safe Clipboard handling for WSL to prevent X11 connection crashes
-#          when copying large metadata. Fallback to console output if clipboard fails.
+# v1.8.0 - Feature: 'Blur Detection Filter'. Added OpenCV Laplacian variance check
+#          to skip blurry frames during extraction. Includes UI controls (Threshold).
+# v1.7.6 - Fix: 'Recursive JSON Unpacker'.
+# v1.7.5 - Fix: 'Smart JSON Unescaper'.
+# v1.7.4 - Fix: 'Smart JSON Decoder'.
+# v1.7.3 - Feature: 'Smart JSON Formatting'.
 # v1.7.2 - Fix: Forced clipboard update.
 # v1.7.1 - UX: 'COPY ALL INFO' button.
 # v1.7   - Feature: 'METADATA / INFO' button (ffprobe).
@@ -81,17 +74,11 @@ __app_name__ = "Dataset Forge"
 # v1.5.3 - Feature: 'Smart Swap'.
 # v1.5.2 - Feature: 'Silent Cleanup'.
 # v1.5   - Fix: System FFmpeg call.
-#          Allows robust MP4 (H.264) encoding on WSL/Linux systems.
-# v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool to auto-fix odd dimensions (swscaler errors).
+# v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool.
 # v1.3   - Feature: Added interactive Treeview for ComfyUI Metadata inspection.
-#          Added Drag & Drop compatible .json export for Workflows.
 # v1.2   - UI: Added syntax highlighting for metadata text.
 # v1.1   - Feature: Added basic ComfyUI Metadata reader button.
-#          Fix: Aggressive in-memory cropping to prevent display crashes on odd-sized videos.
-# v1.0   - Initial Release: Fork of Joschek's Captioner.
-#          Rebranded to 'Dataset Forge'.
-#          Removed Ollama dependency for Native Florence-2 (Base/Large) via Transformers.
-#          Added 'Smart Bucket Resize' (Mod 64) for cropping.
+# v1.0   - Initial Release.
 # -----------------------------------------------------------------------------
 
 # Suppress FFmpeg/OpenCV noisy logs
@@ -121,7 +108,9 @@ DEFAULTS = {
     "last_crop_out": "",
     "last_video_source": "",
     "last_video_output": "",
-    "last_editor_dir": ""
+    "last_editor_dir": "",
+    "blur_threshold": 100.0,  # New in v1.8
+    "blur_filter_enabled": True # New in v1.8
 }
 
 # Theme Colors
@@ -212,6 +201,19 @@ def fix_odd_dims(frame):
     if trim_h > 0 or trim_w > 0: return frame[:h-trim_h, :w-trim_w]
     return frame
 
+def is_image_blurry(image, threshold=100.0):
+    """
+    Check if image is blurry using Laplacian Variance.
+    Returns: (is_blurry, score)
+    """
+    if image is None: return True, 0.0
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        score = cv2.Laplacian(gray, cv2.CV_64F).var()
+        return score < threshold, score
+    except:
+        return False, 0.0
+
 
 # -------------------
 # GUI APPLICATION
@@ -282,6 +284,12 @@ class ForgeApp:
             self.config["last_batch_dir"] = self.batch_dir.get()
             self.config["last_crop_in"] = self.crop_in.get()
             self.config["last_crop_out"] = self.crop_out.get()
+            # Save Blur settings
+            if hasattr(self, 'var_blur_thresh'):
+                self.config["blur_threshold"] = self.var_blur_thresh.get()
+            if hasattr(self, 'var_blur_enabled'):
+                self.config["blur_filter_enabled"] = self.var_blur_enabled.get()
+                
             CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(self.config, f, indent=4)
@@ -403,7 +411,19 @@ class ForgeApp:
         self.vid_slider = ttk.Scale(ctrl, from_=0, to=100, orient="horizontal", command=self.vid_slide)
         self.vid_slider.pack(fill="x", pady=5)
         
-        c_btns = tk.Frame(ctrl, bg=BG); c_btns.pack()
+        # --- BLUR SETTINGS (New v1.8) ---
+        qf = tk.LabelFrame(ctrl, text=" Quality Filter (Blur Detection) ", bg=BG, fg=DIM, font=("Segoe UI", 8))
+        qf.pack(fill="x", pady=5)
+        self.var_blur_enabled = tk.BooleanVar(value=self.config.get("blur_filter_enabled", True))
+        self.var_blur_thresh = tk.DoubleVar(value=self.config.get("blur_threshold", 100.0))
+        
+        tk.Checkbutton(qf, text="Skip Blurry Frames", variable=self.var_blur_enabled, bg=BG, fg=TEXT, selectcolor=BG, activebackground=BG, activeforeground=TEXT).pack(side="left", padx=10)
+        tk.Label(qf, text="Threshold:", bg=BG, fg=DIM).pack(side="left", padx=(10,5))
+        tk.Scale(qf, variable=self.var_blur_thresh, from_=10, to=500, orient="horizontal", bg=BG, fg=TEXT, highlightthickness=0, troughcolor=INPUT, length=200).pack(side="left")
+        tk.Label(qf, text="(<100: Permissive | >300: Strict)", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="left", padx=5)
+        # --------------------------------
+        
+        c_btns = tk.Frame(ctrl, bg=BG); c_btns.pack(pady=5)
         tk.Button(c_btns, text="<< -1s", bg=CARD, fg=TEXT, bd=0, command=lambda: self.vid_step(-30)).pack(side="left", padx=2)
         tk.Button(c_btns, text="< -1fr", bg=CARD, fg=TEXT, bd=0, command=lambda: self.vid_step(-1)).pack(side="left", padx=2)
         self.lbl_vid_cnt = tk.Label(c_btns, text="0 / 0", bg=BG, fg=TEXT, width=15); self.lbl_vid_cnt.pack(side="left", padx=5)
@@ -697,15 +717,46 @@ class ForgeApp:
     def vid_extract_thread(self):
         cap = cv2.VideoCapture(str(self.video_path))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); count = 0
+        
+        # Blur Settings
+        do_blur_check = self.var_blur_enabled.get()
+        blur_thresh = self.var_blur_thresh.get()
+        skipped_blur = 0
+        saved_count = 0
+
         while cap.isOpened() and self.is_running:
             ret, frame = cap.read()
             if not ret: break
+            
             frame = fix_odd_dims(frame) 
-            cv2.imwrite(str(self.video_output_dir / f"{self.video_path.stem}_{count:06d}.jpg"), frame)
+            
+            # --- BLUR CHECK (v1.8) ---
+            should_save = True
+            if do_blur_check:
+                is_blurry, score = is_image_blurry(frame, blur_thresh)
+                if is_blurry:
+                    should_save = False
+                    skipped_blur += 1
+            
+            if should_save:
+                cv2.imwrite(str(self.video_output_dir / f"{self.video_path.stem}_{count:06d}.jpg"), frame)
+                saved_count += 1
+            
             count += 1
             if count % 20 == 0: self.root.after(0, lambda c=count, t=total: self.vid_progress.configure(value=(c/t)*100))
+        
         cap.release(); self.is_running = False
-        self.root.after(0, lambda: [self.btn_extract_all.config(text="EXTRACT ALL", bg=HIGHLIGHT, state="normal"), self.vid_progress.configure(value=0), self.vid_refresh_saved()])
+        
+        result_msg = f"Extracted {saved_count} frames."
+        if do_blur_check:
+            result_msg += f"\nSkipped {skipped_blur} blurry frames (Thresh: {int(blur_thresh)})."
+
+        self.root.after(0, lambda: [
+            self.btn_extract_all.config(text="EXTRACT ALL", bg=HIGHLIGHT, state="normal"), 
+            self.vid_progress.configure(value=0), 
+            self.vid_refresh_saved(),
+            messagebox.showinfo("Done", result_msg)
+        ])
 
     def vid_refresh_saved(self):
         self.lst_frames.delete(0, tk.END)
