@@ -5,13 +5,16 @@ This document tracks the project's modification history as well as future improv
 ## 🚀 Roadmap (Future Evolutions)
 
 ### Modifications In Progress
-- [ ] **Refresh Video List**: Add a fefresh button to update the list of the video to avoid closing the application.
-- [ ] **Add Update Fonction in Batch Captioning**: Add an update function in Batch Captioning instead of make another reload of application.
+- [ ] **Refresh Video List**: Add a refresh button to update the list of the video to avoid closing the application.
+- [ ] **Add Update Function in Batch Captioning**: Add an update function in Batch Captioning instead of make another reload of application.
+- [ ] **Background Removal**: Integration of `rembg` to automatically remove backgrounds (create transparent PNGs) for high-fidelity character training.
+- [ ] **Tag Cleaning**: Smart filtering of Florence-2 captions to remove "parasite words" (e.g., "image of", "seen from") for cleaner SDXL natural language prompts.
 
 ### Short Term
+- [ ] **Distribution Analyzer**: Dashboard to visualize dataset statistics (aspect ratios, resolution distribution) to ensure variety (Bucketing check).
+- [ ] **Kohya_ss Export**: One-click export to generate the folder structure (`img/10_trigger`) and `config.toml` for Kohya training.
 - [ ] **Drag & Drop Support**: Allow dragging and dropping video/image folders directly into the interface.
 - [ ] **Batch Queue**: Ability to run captioning/cropping tasks in the background on multiple folders sequentially.
-- [ ] **Quality Filters**: Integration of an aesthetic or blur score to automatically sort extracted images.
 
 ### Long Term
 - [ ] **Multi-Model Support**: Integration of alternatives to Florence-2 (e.g., JoyTag, WD14) for tagging.
@@ -22,9 +25,25 @@ This document tracks the project's modification history as well as future improv
 
 ## 📋 Version History
 
-### [v1.7.6] - 2026-01-01
+### [v1.8.0] - 2025-01-05
 
 #### ✨ New Features
+- **Blur Detection Filter**: Added OpenCV Laplacian variance check to automatically skip blurry frames during extraction.
+- **Quality Filter UI**: Added a new "Advanced Quality Settings" section in the Video Extractor tab with a toggle and a Threshold slider.
+- **Smart Reporting**: The extraction log now details how many blurry frames were rejected.
+
+### [v1.7.6] - 2026-01-03
+
+#### ✨ New Features
+- Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
+
+#### 🔧 Maintenance & Improvements
+- Docs: README.md installation part updated
+
+#### 🔧 Others
+- README.md manual eidt image update
+- deleted images sizes
+- README.MD in version 2.1
 - Feature: Added 'METADATA / INFO' button in Video Extractor tab. - Uses 'ffprobe' to extract deep video info and potential ComfyUI metadata tags.
 
 ### [v1.7.5] - 2026-01-01
@@ -34,7 +53,7 @@ This document tracks the project's modification history as well as future improv
 
 #### 🔧 Others
 - Fix: 'Smart JSON Unescaper'. Backported from v1.9.
-       Detects and cleans escaped JSON strings (e.g. "{\"prompt\":...) in
+        Detects and cleans escaped JSON strings (e.g. "{\"prompt\":...) in
         video metadata to display readable ComfyUI workflows/prompts.
 
 ### [v1.7.4] - 2026-01-01
