@@ -50,6 +50,15 @@ except ImportError:
     print("pip install tkinterdnd2")
     DND_AVAILABLE = False
 
+# Background Removal Support
+try:
+    from rembg import remove, new_session
+    REMBG_AVAILABLE = True
+except ImportError:
+    print("WARNING: 'rembg' not found. Background Removal tab will not work.")
+    print("pip install rembg[gpu]")
+    REMBG_AVAILABLE = False
+
 # Logic/ML Imports
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
@@ -62,18 +71,18 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.9..1"
+__version__ = "1.10.0"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.9.0 - Feature: 'Drag & Drop Support'. Added tkinterdnd2 integration.
-#          Dropping a folder/file on the window auto-loads it into the active tab.
-# v1.8.0 - Feature: 'Blur Detection Filter'. Added OpenCV Laplacian variance check.
-# v1.7.6 - Fix: 'Recursive JSON Unpacker'.
-# ... (Older logs omitted for brevity)
+# v1.10.0 - Feature: 'Background Removal'. Integration of rembg (u2net) to create
+#           transparent PNGs automatically.
+# v1.9.1  - Feature: 'Refresh Button' in Video Extractor.
+# v1.9.0  - Feature: 'Drag & Drop Support'.
+# v1.8.0  - Feature: 'Blur Detection Filter'.
 # -----------------------------------------------------------------------------
 
 # Suppress FFmpeg/OpenCV noisy logs
@@ -101,6 +110,8 @@ DEFAULTS = {
     "last_batch_dir": "",
     "last_crop_in": "",
     "last_crop_out": "",
+    "last_rembg_in": "",
+    "last_rembg_out": "",
     "last_video_source": "",
     "last_video_output": "",
     "last_editor_dir": "",
@@ -266,13 +277,10 @@ class ForgeApp:
     # --- DRAG & DROP HANDLER (NEW v1.9) ---
     def on_drop(self, event):
         data = event.data
-        # Clean paths (tkinterdnd2 wraps paths with spaces in {})
         if data.startswith('{') and data.endswith('}'):
             data = data[1:-1]
         
         path = Path(data)
-        
-        # If file dropped, take parent dir (unless it's a single video loading)
         if path.is_file():
             target_dir = path.parent
         else:
@@ -280,7 +288,6 @@ class ForgeApp:
 
         print(f"Dropped: {target_dir} (Active Tab: {self.curr_tab})")
 
-        # Context-aware loading
         if self.curr_tab == "Video Extractor":
             self.video_source_dir = target_dir
             self.config["last_video_source"] = str(target_dir)
@@ -290,6 +297,9 @@ class ForgeApp:
         elif self.curr_tab == "Smart Cropping":
             self.crop_in.set(str(target_dir))
             
+        elif self.curr_tab == "Background Removal":
+            self.rembg_in.set(str(target_dir))
+
         elif self.curr_tab == "Batch Captioning":
             self.batch_dir.set(str(target_dir))
             
@@ -316,7 +326,9 @@ class ForgeApp:
             self.config["last_batch_dir"] = self.batch_dir.get()
             self.config["last_crop_in"] = self.crop_in.get()
             self.config["last_crop_out"] = self.crop_out.get()
-            # Save Blur settings
+            self.config["last_rembg_in"] = self.rembg_in.get()
+            self.config["last_rembg_out"] = self.rembg_out.get()
+            
             if hasattr(self, 'var_blur_thresh'):
                 self.config["blur_threshold"] = self.var_blur_thresh.get()
             if hasattr(self, 'var_blur_enabled'):
@@ -355,14 +367,20 @@ class ForgeApp:
         self.tabs = {}; self.btns = {}; self.curr_tab = None
         bar = tk.Frame(main, bg=BG); bar.pack(side="top", fill="x", padx=20)
         
-        for n in ["Video Extractor", "Smart Cropping", "Batch Captioning", "Manual Edit"]:
+        tab_names = ["Video Extractor", "Smart Cropping", "Background Removal", "Batch Captioning", "Manual Edit"]
+        
+        for n in tab_names:
             self.tabs[n] = tk.Frame(self.content, bg=BG)
             b = tk.Label(bar, text=n, bg=BG, fg=DIM, font=("Segoe UI", 10, "bold"), cursor="hand2", padx=15, pady=10)
             b.pack(side="left"); b.bind("<Button-1>", lambda e, x=n: self.switch_tab(x))
             self.btns[n] = b
         tk.Frame(main, bg=INPUT, height=2).pack(side="top", fill="x") 
         
-        self.build_video_tab(); self.build_crop_tab(); self.build_batch_tab(); self.build_editor_tab()
+        self.build_video_tab()
+        self.build_crop_tab()
+        self.build_rembg_tab() # New v1.10.0
+        self.build_batch_tab()
+        self.build_editor_tab()
         self.switch_tab("Video Extractor")
 
     def monitor_resources(self):
@@ -405,14 +423,11 @@ class ForgeApp:
         f = self.tabs["Video Extractor"]
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
         
-        # --- BOUTONS GAUCHE ---
         tk.Button(t, text="Select Source Folder", bg=ACCENT, fg=BG, bd=0, command=self.vid_browse_src).pack(side="left", padx=5, ipady=5)
         tk.Button(t, text="Set Output Folder", bg=CARD, fg=TEXT, bd=0, command=self.vid_browse_out).pack(side="left", padx=5, ipady=5)
-        
-        # [NEW] BOUTON REFRESH
         tk.Button(t, text="🔄 Refresh", bg=CARD, fg=TEXT, bd=0, command=self.vid_refresh_files).pack(side="left", padx=5, ipady=5)
         
-        # --- BOUTONS DROITE (Tools) ---
+        # Tools Frame
         tr = tk.Frame(t, bg=BG); tr.pack(side="right")
         self.btn_batch_fix = tk.Button(tr, text="BATCH FIX FOLDER", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_batch_fix_tool)
         self.btn_batch_fix.pack(side="right", padx=5, ipady=5)
@@ -875,6 +890,81 @@ class ForgeApp:
         self.root.after(0, lambda: [self.crop_log.config(text="Done"), self.btn_crop.config(text="START CROPPING", bg=HIGHLIGHT, state="normal")])
 
     # ==========================
+    # TAB: BACKGROUND REMOVAL (NEW v1.10.0)
+    # ==========================
+    def build_rembg_tab(self):
+        f = self.tabs["Background Removal"]; f.configure(padx=30, pady=20)
+        
+        if not REMBG_AVAILABLE:
+            tk.Label(f, text="⚠️ 'rembg' library is missing. Install it to use this tab:\npip install rembg[gpu]", bg=BG, fg=ERROR, font=("Segoe UI", 12)).pack(pady=50)
+            return
+
+        self.rembg_in = tk.StringVar(value=self.config.get("last_rembg_in", ""))
+        self.rembg_out = tk.StringVar(value=self.config.get("last_rembg_out", ""))
+        self.field(f, "Input Folder (Images)", self.rembg_in, True)
+        self.field(f, "Output Folder (Transparent PNGs)", self.rembg_out, True)
+        
+        # Options
+        opt = tk.Frame(f, bg=BG); opt.pack(fill="x", pady=20)
+        tk.Label(opt, text="Model:", bg=BG, fg=DIM).pack(side="left")
+        self.rembg_model = tk.StringVar(value="u2net")
+        # u2net is generic, u2net_human_seg is optimized for people
+        ttk.Combobox(opt, textvariable=self.rembg_model, values=["u2net", "u2net_human_seg", "isnet-general-use"], state="readonly", width=20).pack(side="left", padx=10)
+        
+        self.btn_rembg = tk.Button(f, text="REMOVE BACKGROUNDS", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 10, "bold"), command=self.toggle_rembg)
+        self.btn_rembg.pack(pady=10, ipady=10, fill="x")
+        
+        self.rembg_bar = ttk.Progressbar(f, mode="determinate"); self.rembg_bar.pack(fill="x")
+        self.rembg_log = tk.Label(f, text="Idle", bg=BG, fg=DIM); self.rembg_log.pack()
+
+    def toggle_rembg(self):
+        if not REMBG_AVAILABLE: return
+        if not self.rembg_in.get() or not self.rembg_out.get():
+            return messagebox.showerror("Err", "Select input and output folders.")
+        
+        if self.is_running:
+            self.is_running = False; self.btn_rembg.config(text="Stopping...", state="disabled")
+        else:
+            self.save_config(); self.is_running = True; self.btn_rembg.config(text="STOP", bg=ERROR)
+            threading.Thread(target=self.rembg_worker, daemon=True).start()
+
+    def rembg_worker(self):
+        src = Path(self.rembg_in.get())
+        dst = Path(self.rembg_out.get()); dst.mkdir(exist_ok=True)
+        imgs = list(src.glob("*.jpg")) + list(src.glob("*.png")) + list(src.glob("*.webp"))
+        model = self.rembg_model.get()
+        
+        try:
+            session = new_session(model)
+            for i, path in enumerate(imgs):
+                if not self.is_running: break
+                
+                try:
+                    img = Image.open(path)
+                    output = remove(img, session=session)
+                    # Save as PNG to keep transparency
+                    out_name = dst / f"{path.stem}.png"
+                    output.save(out_name)
+                    
+                    self.root.after(0, lambda x=i, t=len(imgs): [
+                        self.rembg_bar.configure(value=(x/t)*100), 
+                        self.rembg_log.config(text=f"Processed {x+1}/{t}")
+                    ])
+                except Exception as e:
+                    print(f"Error on {path.name}: {e}")
+                    
+        except Exception as e:
+            print(f"Session Error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Rembg Error", str(e)))
+
+        self.is_running = False
+        self.root.after(0, lambda: [
+            self.rembg_log.config(text="Done"), 
+            self.btn_rembg.config(text="REMOVE BACKGROUNDS", bg=HIGHLIGHT, state="normal"),
+            self.rembg_bar.configure(value=0)
+        ])
+
+    # ==========================
     # TAB: BATCH CAPTION
     # ==========================
     def build_batch_tab(self):
@@ -960,7 +1050,7 @@ class ForgeApp:
         if d: self.config["last_editor_dir"] = d; self.save_config(); self.load_ed_dir(Path(d))
 
     def load_ed_dir(self, path):
-        self.editor_files = sorted(list(path.glob("*.jpg")) + list(path.glob("*.png")))
+        self.editor_files = sorted(list(path.glob("*.jpg")) + list(path.glob("*.png")) + list(path.glob("*.webp")))
         self.ed_list.delete(0, tk.END)
         for p in self.editor_files: self.ed_list.insert(tk.END, p.name)
         if self.editor_files: self.editor_nav(0, abs_idx=0)

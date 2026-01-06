@@ -5,15 +5,12 @@ This document tracks the project's modification history as well as future improv
 ## 🚀 Roadmap (Future Evolutions)
 
 ### Modifications In Progress
-- [ ] **Refresh Video List**: Add a refresh button to update the list of the video to avoid closing the application.
-- [ ] **Add Update Function in Batch Captioning**: Add an update function in Batch Captioning instead of make another reload of application.
-- [ ] **Background Removal**: Integration of `rembg` to automatically remove backgrounds (create transparent PNGs) for high-fidelity character training.
 - [ ] **Tag Cleaning**: Smart filtering of Florence-2 captions to remove "parasite words" (e.g., "image of", "seen from") for cleaner SDXL natural language prompts.
+- [ ] **Add Update Function in Batch Captioning**: Add an update function in Batch Captioning instead of make another reload of application.
 
 ### Short Term
 - [ ] **Distribution Analyzer**: Dashboard to visualize dataset statistics (aspect ratios, resolution distribution) to ensure variety (Bucketing check).
 - [ ] **Kohya_ss Export**: One-click export to generate the folder structure (`img/10_trigger`) and `config.toml` for Kohya training.
-- [ ] **Drag & Drop Support**: Allow dragging and dropping video/image folders directly into the interface.
 - [ ] **Batch Queue**: Ability to run captioning/cropping tasks in the background on multiple folders sequentially.
 
 ### Long Term
@@ -24,6 +21,26 @@ This document tracks the project's modification history as well as future improv
 ---
 
 ## 📋 Version History
+
+### [v1.10.0] - 2025-01-06
+
+#### ✨ New Features
+- **Background Removal**: Integrated `rembg` (u2net) to automatically remove backgrounds from images.
+  - Supports multiple models: `u2net` (General), `u2net_human_seg` (Optimized for humans), `isnet-general-use`.
+  - Generates transparent PNGs ready for high-fidelity training.
+  - Drag & Drop support added for this new tab.
+
+### [v1.9.1] - 2025-01-06
+
+#### ✨ New Features
+- **Refresh Button**: Added a "🔄 Refresh" button in the Video Extractor tab. Allows reloading the file list if files were added manually via Windows Explorer.
+
+### [v1.9.0] - 2025-01-06
+
+#### ✨ New Features
+- **Drag & Drop Support**: Integrated `tkinterdnd2`. You can now drop a folder directly onto the window to load it into the active tab (Video, Crop, Caption, Edit).
+                        - This feature works seamlessly on Windows when script launched from windows or from Linux when script lauch from Linux.
+                        Not working in WSL Linux.
 
 ### [v1.8.0] - 2025-01-05
 

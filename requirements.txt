@@ -3,9 +3,10 @@
 # -----------------------------------------------------------------------------
 # The MIT License (MIT)
 # Copyright (c) 2026 by Patrice Le Guyader
-# https://github.com/patlegu/dataset_forge"
+# https://github.com/patlegu/dataset_forge
 # -----------------------------------------------------------------------------
-# Core ML & Vision
+
+# --- Core ML & Vision ---
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
@@ -13,10 +14,19 @@ transformers>=4.38.0
 timm>=0.9.12
 einops>=0.7.0
 
-# Image & Video Processing
+# --- Image & Video Processing ---
 pillow>=10.0.0
 opencv-python>=4.9.0.80
 numpy>=1.24.0
 
-# System Utilities
+# --- Background Removal ---
+# https://github.com/danielgatis/rembg
+ rembg[gpu]
+#rembg
+
+# --- GUI & Interaction ---
+# Note: Version 0.3.0 est le standard PyPI pour tkinterdnd2
+tkinterdnd2>=0.3.0
+
+# --- System Utilities ---
 psutil>=5.9.0
