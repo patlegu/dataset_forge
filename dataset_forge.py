@@ -41,6 +41,15 @@ from typing import Dict, Any, List, Optional
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, colorchooser, scrolledtext
 
+# Drag & Drop Support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    print("WARNING: 'tkinterdnd2' not found. Drag & Drop will be disabled.")
+    print("pip install tkinterdnd2")
+    DND_AVAILABLE = False
+
 # Logic/ML Imports
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
@@ -53,32 +62,18 @@ import numpy as np
 # Metadata
 __author__ = "Patrice Le Guyader"
 __url__ = "https://github.com/patlegu/dataset_forge"
-__version__ = "1.8.0"
+__version__ = "1.9..1"
 __status__ = "Production"
 __app_name__ = "Dataset Forge"
 
 # -----------------------------------------------------------------------------
 # CHANGELOG
 # -----------------------------------------------------------------------------
-# v1.8.0 - Feature: 'Blur Detection Filter'. Added OpenCV Laplacian variance check
-#          to skip blurry frames during extraction. Includes UI controls (Threshold).
+# v1.9.0 - Feature: 'Drag & Drop Support'. Added tkinterdnd2 integration.
+#          Dropping a folder/file on the window auto-loads it into the active tab.
+# v1.8.0 - Feature: 'Blur Detection Filter'. Added OpenCV Laplacian variance check.
 # v1.7.6 - Fix: 'Recursive JSON Unpacker'.
-# v1.7.5 - Fix: 'Smart JSON Unescaper'.
-# v1.7.4 - Fix: 'Smart JSON Decoder'.
-# v1.7.3 - Feature: 'Smart JSON Formatting'.
-# v1.7.2 - Fix: Forced clipboard update.
-# v1.7.1 - UX: 'COPY ALL INFO' button.
-# v1.7   - Feature: 'METADATA / INFO' button (ffprobe).
-# v1.6   - Feature: 'BATCH FIX FOLDER'.
-# v1.5.4 - UX Fix: 'Scroll Memory'.
-# v1.5.3 - Feature: 'Smart Swap'.
-# v1.5.2 - Feature: 'Silent Cleanup'.
-# v1.5   - Fix: System FFmpeg call.
-# v1.4   - Feature: Added 'REPAIR / FIX VIDEO' tool.
-# v1.3   - Feature: Added interactive Treeview for ComfyUI Metadata inspection.
-# v1.2   - UI: Added syntax highlighting for metadata text.
-# v1.1   - Feature: Added basic ComfyUI Metadata reader button.
-# v1.0   - Initial Release.
+# ... (Older logs omitted for brevity)
 # -----------------------------------------------------------------------------
 
 # Suppress FFmpeg/OpenCV noisy logs
@@ -109,8 +104,8 @@ DEFAULTS = {
     "last_video_source": "",
     "last_video_output": "",
     "last_editor_dir": "",
-    "blur_threshold": 100.0,  # New in v1.8
-    "blur_filter_enabled": True # New in v1.8
+    "blur_threshold": 100.0,
+    "blur_filter_enabled": True
 }
 
 # Theme Colors
@@ -202,10 +197,6 @@ def fix_odd_dims(frame):
     return frame
 
 def is_image_blurry(image, threshold=100.0):
-    """
-    Check if image is blurry using Laplacian Variance.
-    Returns: (is_blurry, score)
-    """
     if image is None: return True, 0.0
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -227,6 +218,11 @@ class ForgeApp:
         root.configure(bg=BG)
         root.option_add("*Font", ("Segoe UI", 10))
         root.protocol("WM_DELETE_WINDOW", self.on_close) 
+
+        # Init DND if available
+        if DND_AVAILABLE:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind('<<Drop>>', self.on_drop)
 
         self.engine = FlorenceEngine()
         self.is_running = False 
@@ -266,6 +262,42 @@ class ForgeApp:
         self.root.bind("<Control-s>", lambda e: self.editor_save())
         self.root.bind("<Alt-Right>", lambda e: self.editor_nav(1))
         self.root.bind("<Alt-Left>", lambda e: self.editor_nav(-1))
+
+    # --- DRAG & DROP HANDLER (NEW v1.9) ---
+    def on_drop(self, event):
+        data = event.data
+        # Clean paths (tkinterdnd2 wraps paths with spaces in {})
+        if data.startswith('{') and data.endswith('}'):
+            data = data[1:-1]
+        
+        path = Path(data)
+        
+        # If file dropped, take parent dir (unless it's a single video loading)
+        if path.is_file():
+            target_dir = path.parent
+        else:
+            target_dir = path
+
+        print(f"Dropped: {target_dir} (Active Tab: {self.curr_tab})")
+
+        # Context-aware loading
+        if self.curr_tab == "Video Extractor":
+            self.video_source_dir = target_dir
+            self.config["last_video_source"] = str(target_dir)
+            self.vid_refresh_files()
+            messagebox.showinfo("Loaded", f"Source folder set to:\n{target_dir.name}")
+            
+        elif self.curr_tab == "Smart Cropping":
+            self.crop_in.set(str(target_dir))
+            
+        elif self.curr_tab == "Batch Captioning":
+            self.batch_dir.set(str(target_dir))
+            
+        elif self.curr_tab == "Manual Edit":
+            self.config["last_editor_dir"] = str(target_dir)
+            self.load_ed_dir(target_dir)
+            
+        self.save_config()
 
     # --- CONFIG ---
     def load_config(self):
@@ -372,10 +404,15 @@ class ForgeApp:
     def build_video_tab(self):
         f = self.tabs["Video Extractor"]
         t = tk.Frame(f, bg=BG); t.pack(fill="x", padx=10, pady=10)
+        
+        # --- BOUTONS GAUCHE ---
         tk.Button(t, text="Select Source Folder", bg=ACCENT, fg=BG, bd=0, command=self.vid_browse_src).pack(side="left", padx=5, ipady=5)
         tk.Button(t, text="Set Output Folder", bg=CARD, fg=TEXT, bd=0, command=self.vid_browse_out).pack(side="left", padx=5, ipady=5)
         
-        # Tools Frame
+        # [NEW] BOUTON REFRESH
+        tk.Button(t, text="🔄 Refresh", bg=CARD, fg=TEXT, bd=0, command=self.vid_refresh_files).pack(side="left", padx=5, ipady=5)
+        
+        # --- BOUTONS DROITE (Tools) ---
         tr = tk.Frame(t, bg=BG); tr.pack(side="right")
         self.btn_batch_fix = tk.Button(tr, text="BATCH FIX FOLDER", bg=HIGHLIGHT, fg=BG, bd=0, font=("Segoe UI", 9, "bold"), command=self.vid_batch_fix_tool)
         self.btn_batch_fix.pack(side="right", padx=5, ipady=5)
@@ -404,7 +441,7 @@ class ForgeApp:
         sb2 = tk.Scrollbar(sf, command=self.lst_frames.yview); sb2.pack(side="right", fill="y"); self.lst_frames.config(yscrollcommand=sb2.set)
 
         right = tk.Frame(pane, bg=BG); right.pack(side="left", fill="both", expand=True)
-        self.vid_canvas = tk.Label(right, bg="black", text="Select a video", fg="white")
+        self.vid_canvas = tk.Label(right, bg="black", text="Select a video (or Drag Folder)", fg="white")
         self.vid_canvas.pack(fill="both", expand=True)
         
         ctrl = tk.Frame(right, bg=BG); ctrl.pack(fill="x", pady=10)
@@ -1032,7 +1069,13 @@ class ForgeApp:
 
 def main():
     """Main application entry point."""
-    root = tk.Tk()
+    
+    # Initialize DND Aware Root if available, else standard
+    if DND_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
+        
     app = ForgeApp(root)
     root.mainloop()
 
